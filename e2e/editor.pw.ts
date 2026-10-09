@@ -1,0 +1,641 @@
+import { test, expect, type Page } from '@playwright/test'
+import { readFile } from 'node:fs/promises'
+
+test('wheel zoom anchors the map, right drag pans, and object coordinates stay in original pixels', async ({ page }) => {
+  await page.goto('/')
+  await page.getByTestId('background-input').setInputFiles(await imageFile(page, 'map.png', 800, 600, '#dddddd'))
+  await page.getByTestId('layer-input').setInputFiles(await imageFile(page, 'actor.png', 80, 60, '#00ff00'))
+  const stage = page.getByTestId('stage'), actor = page.getByTestId('image-layer')
+  const initial = (await stage.boundingBox())!
+  const point = { x: Math.round(initial.x + initial.width / 2 + 20), y: Math.round(initial.y + initial.height / 2 + 20) }
+  await page.mouse.move(point.x, point.y)
+  await page.mouse.wheel(0, -500)
+  await expect.poll(async () => (await stage.boundingBox())!.width).toBeGreaterThan(initial.width * 2)
+  const enlarged = (await stage.boundingBox())!
+  const ratio = enlarged.width / initial.width
+  expect((point.x - enlarged.x) / ratio).toBeCloseTo(point.x - initial.x, 1)
+  expect((point.y - enlarged.y) / ratio).toBeCloseTo(point.y - initial.y, 1)
+  await expect(page.getByTestId('layer-card')).toContainText('(360, 270)')
+  const actorBox = (await actor.boundingBox())!
+  await page.mouse.move(actorBox.x + actorBox.width / 2, actorBox.y + actorBox.height / 2)
+  await page.mouse.down({ button: 'right' })
+  await page.mouse.move(actorBox.x + actorBox.width / 2 + 40, actorBox.y + actorBox.height / 2 + 30)
+  await page.mouse.up({ button: 'right' })
+  const panned = (await stage.boundingBox())!
+  expect(panned.x - enlarged.x).toBeCloseTo(40, 1)
+  expect(panned.y - enlarged.y).toBeCloseTo(30, 1)
+  await expect(actor).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByTestId('layer-card')).toContainText('(360, 270)')
+  const movedBox = (await actor.boundingBox())!, scale = panned.width / 800
+  await page.mouse.move(movedBox.x + movedBox.width / 2, movedBox.y + movedBox.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(movedBox.x + movedBox.width / 2 + 10 * scale, movedBox.y + movedBox.height / 2 + 5 * scale)
+  await page.mouse.up()
+  await expect(page.getByTestId('layer-card')).toContainText('(370, 275)')
+  const workspaceBox = (await page.locator('.workspace').boundingBox())!
+  await page.mouse.move(workspaceBox.x + workspaceBox.width / 2, workspaceBox.y + workspaceBox.height / 2)
+  await page.mouse.down({ button: 'right' })
+  await page.mouse.move(workspaceBox.x + workspaceBox.width / 2 + 2000, workspaceBox.y + workspaceBox.height / 2 + 2000)
+  await page.mouse.up({ button: 'right' })
+  const atEdge = (await stage.boundingBox())!
+  expect(atEdge.x).toBeCloseTo(workspaceBox.x + 1, 1)
+  expect(atEdge.y).toBeCloseTo(workspaceBox.y + 1, 1)
+  await expect(page.getByTestId('layer-card')).toContainText('(370, 275)')
+  await page.getByRole('button', { name: '适应窗口' }).click()
+  const restored = (await stage.boundingBox())!
+  expect(restored.width).toBeCloseTo(initial.width, 1)
+  expect(restored.x).toBeCloseTo(initial.x, 1)
+  await page.mouse.move(restored.x + restored.width / 2, restored.y + restored.height / 2)
+  await page.mouse.down({ button: 'right' })
+  await page.mouse.move(restored.x + restored.width / 2 + 60, restored.y + restored.height / 2 + 60)
+  await page.mouse.up({ button: 'right' })
+  expect((await stage.boundingBox())!.x).toBeCloseTo(restored.x, 1)
+  await expect(actor).toHaveAttribute('aria-pressed', 'true')
+})
+
+async function imageFile(page: Page, name: string, width: number, height: number, color: string, transparent = false) {
+  const base64 = await page.evaluate(({ width, height, color, transparent }) => {
+    const canvas = document.createElement('canvas')
+    canvas.width = width; canvas.height = height
+    const ctx = canvas.getContext('2d')!
+    ctx.fillStyle = color
+    ctx.fillRect(0, 0, width, transparent ? height / 2 : height)
+    return canvas.toDataURL('image/png').split(',')[1]!
+  }, { width, height, color, transparent })
+  return { name, mimeType: 'image/png', buffer: Buffer.from(base64, 'base64') }
+}
+
+async function downloadBytes(page: Page, action: () => Promise<unknown>) {
+  const promise = page.waitForEvent('download')
+  await action()
+  const download = await promise
+  const path = await download.path()
+  return readFile(path!)
+}
+
+async function rename(page: Page, name: string) {
+  await page.locator('[data-testid="layer-card"][aria-pressed="true"]').getByTestId('edit-name').click()
+  await page.getByRole('textbox', { name: '角色 / 物品名称' }).fill(name)
+  await page.getByRole('textbox', { name: '角色 / 物品名称' }).press('Enter')
+}
+
+test('load, move, resize, preserve coordinates, restore, export, and recover from invalid files', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: '先放一张背景图片' })).toBeVisible()
+  await page.screenshot({ path: 'test-results/frame-empty.png', fullPage: true })
+  await expect(page.getByRole('button', { name: '添加图片', exact: false })).toBeDisabled()
+  const bg = await imageFile(page, 'background.png', 800, 600, '#e0e0e0')
+  const sprite = await imageFile(page, 'sprite.png', 200, 100, '#00ff00', true)
+  await page.getByTestId('background-input').setInputFiles(bg)
+  await expect(page.getByTestId('stage')).toBeVisible()
+  await page.getByTestId('layer-input').setInputFiles(sprite)
+  await expect(page.getByTestId('layer-card')).toContainText('(300, 250)')
+  const layer = page.getByTestId('image-layer')
+  const bounds = (await layer.boundingBox())!
+  const stage = (await page.getByTestId('stage').boundingBox())!
+  const scale = stage.width / 800
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(bounds.x + bounds.width / 2 + 40 * scale, bounds.y + bounds.height / 2 + 20 * scale)
+  await page.mouse.up()
+  await expect(page.getByTestId('layer-card')).toContainText('(340, 270)')
+  const handle = (await page.getByTestId('resize-se').boundingBox())!
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(handle.x + handle.width / 2 + 100 * scale, handle.y + handle.height / 2 + 50 * scale)
+  await page.mouse.up()
+  await expect(page.getByTestId('layer-card')).toContainText('(640, 420)')
+  await expect(page.getByTestId('layer-card')).toContainText('300 × 150 px')
+  await page.setViewportSize({ width: 1050, height: 780 })
+  await expect(page.getByTestId('layer-card')).toContainText('(340, 270)')
+  await expect(page.getByTestId('layer-card')).toContainText('(640, 420)')
+  const saved = await downloadBytes(page, () => page.getByRole('button', { name: '保存项目', exact: false }).click())
+  const project = JSON.parse(saved.toString())
+  expect(project.layers[0].width).toBeCloseTo(300)
+  expect(project.layers[0].src).toMatch(/^data:image\/png;base64,/)
+  await page.getByRole('button', { name: '导出', exact: true }).click()
+  const coordinates = JSON.parse((await downloadBytes(page, () => page.getByRole('button', { name: '导出坐标' }).click())).toString())
+  expect(coordinates.layers[0].topLeft).toEqual({ x: 340, y: 270 })
+  expect(coordinates.layers[0].bottomRight).toEqual({ x: 640, y: 420 })
+  await page.getByRole('button', { name: '导出', exact: true }).click()
+  const png = await downloadBytes(page, () => page.getByRole('button', { name: '合成图片' }).click())
+  const pixelCheck = await page.evaluate(async src => {
+    const image = new Image(); image.src = src; await image.decode()
+    const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height
+    const context = canvas.getContext('2d')!; context.drawImage(image, 0, 0)
+    return { width: image.width, height: image.height, green: Array.from(context.getImageData(400, 300, 1, 1).data), transparentArea: Array.from(context.getImageData(400, 400, 1, 1).data), background: Array.from(context.getImageData(0, 0, 1, 1).data) }
+  }, `data:image/png;base64,${png.toString('base64')}`)
+  expect(pixelCheck).toEqual({ width: 800, height: 600, green: [0, 255, 0, 255], transparentArea: [224, 224, 224, 255], background: [224, 224, 224, 255] })
+  await page.getByRole('button', { name: '删除图片' }).click()
+  await expect(page.getByTestId('image-layer')).toHaveCount(0)
+  page.once('dialog', dialog => dialog.accept())
+  await page.getByTestId('project-input').setInputFiles({ name: 'saved.frame.json', mimeType: 'application/json', buffer: saved })
+  await expect(page.getByTestId('layer-card')).toContainText('(640, 420)')
+  await page.getByTestId('project-input').setInputFiles({ name: 'bad.json', mimeType: 'application/json', buffer: Buffer.from('{"version":2}') })
+  await expect(page.getByRole('status')).toContainText('打开项目失败')
+  await expect(page.getByTestId('layer-card')).toContainText('(640, 420)')
+  await page.getByTestId('layer-input').setInputFiles({ name: 'broken.png', mimeType: 'image/png', buffer: Buffer.from('not an image') })
+  await expect(page.locator('.toast[role="status"]')).toContainText('无法读取图片')
+  await expect(page.getByTestId('image-layer')).toHaveCount(1)
+  await page.getByTestId('layer-input').setInputFiles(sprite)
+  await expect(page.getByTestId('image-layer')).toHaveCount(2)
+  await page.getByTestId('layer-card').nth(1).click()
+  await expect(page.getByTestId('image-layer').nth(0)).toHaveClass(/selected/)
+  await page.screenshot({ path: 'test-results/frame-editor.png', fullPage: true })
+  await page.getByTestId('background-input').setInputFiles(bg)
+  await expect(page.getByRole('dialog')).toBeVisible()
+  await page.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(page.getByTestId('image-layer')).toHaveCount(2)
+  await page.getByTestId('background-input').setInputFiles(bg)
+  await page.getByRole('button', { name: '替换并清空' }).click()
+  await expect(page.getByTestId('image-layer')).toHaveCount(0)
+  expect(errors).toEqual([])
+})
+
+test('movement stays inside background even when pointer leaves the image', async ({ page }) => {
+  await page.goto('/')
+  await page.getByTestId('background-input').setInputFiles(await imageFile(page, 'bg.png', 800, 600, '#fff'))
+  await page.getByTestId('layer-input').setInputFiles(await imageFile(page, 'small.png', 200, 100, '#f00'))
+  const box = (await page.getByTestId('image-layer').boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down(); await page.mouse.move(0, 0); await page.mouse.up()
+  await expect(page.getByTestId('layer-card')).toContainText('(0, 0)')
+  const moved = (await page.getByTestId('image-layer').boundingBox())!
+  await page.mouse.move(moved.x + moved.width / 2, moved.y + moved.height / 2)
+  await page.mouse.down(); await page.mouse.move(1275, 895); await page.mouse.up()
+  await expect(page.getByTestId('layer-card')).toContainText('(600, 500)')
+  await expect(page.getByTestId('layer-card')).toContainText('(800, 600)')
+})
+
+test('names, outside corner labels, shape drawing, Ctrl, and optional exported annotations', async ({ page }) => {
+  await page.goto('/')
+  await page.getByTestId('background-input').setInputFiles(await imageFile(page, 'scene.png', 800, 600, '#e0e0e0'))
+  await page.getByTestId('layer-input').setInputFiles(await imageFile(page, 'hero.png', 200, 100, '#ff0000'))
+  await rename(page, '勇者')
+  await expect(page.getByTestId('object-name')).toHaveText('勇者')
+  const hero = (await page.getByTestId('image-layer').boundingBox())!
+  const name = (await page.getByTestId('object-name').boundingBox())!
+  expect(name.y).toBeCloseTo(hero.y + hero.height, 0)
+  expect(name.x + name.width / 2).toBeCloseTo(hero.x + hero.width / 2, 0)
+  await expect(page.getByTestId('top-left-label')).toHaveCount(0)
+  await expect(page.getByTestId('bottom-right-label')).toHaveCount(0)
+  await expect(page.getByTestId('center-label')).toHaveText('(400, 300)')
+  await expect(page.getByTestId('anchor-grid').locator('small')).toHaveCount(9)
+  const stage = (await page.getByTestId('stage').boundingBox())!
+  const scale = stage.width / 800
+  const point = (x: number, y: number) => ({ x: stage.x + x * scale, y: stage.y + y * scale })
+  const draw = async (kind: '正方形' | '圆形', start: { x: number; y: number }, end: { x: number; y: number }, ctrl = false) => {
+    await page.getByRole('button', { name: `绘制${kind}`, exact: true }).click()
+    const from = point(start.x, start.y); const to = point(end.x, end.y)
+    if (ctrl) await page.keyboard.down('Control')
+    await page.mouse.move(from.x, from.y); await page.mouse.down(); await page.mouse.move(to.x, to.y); await page.mouse.up()
+    if (ctrl) await page.keyboard.up('Control')
+  }
+  await draw('正方形', { x: 40, y: 60 }, { x: 160, y: 100 })
+  await expect(page.getByTestId('layer-card').first()).toContainText('120 × 120 px')
+  await draw('圆形', { x: 500, y: 50 }, { x: 550, y: 90 })
+  await expect(page.getByTestId('layer-card').first()).toContainText('50 × 50 px')
+  await draw('正方形', { x: 30, y: 350 }, { x: 210, y: 440 }, true)
+  await expect(page.getByTestId('layer-card').first()).toContainText('180 × 90 px')
+  await draw('圆形', { x: 400, y: 400 }, { x: 600, y: 500 }, true)
+  await expect(page.getByTestId('layer-card').first()).toContainText('200 × 100 px')
+  await rename(page, '目标区域')
+  // Ctrl may be toggled without moving the pointer during a drawing gesture.
+  await page.getByRole('button', { name: '绘制正方形', exact: true }).click()
+  await expect(page.getByRole('button', { name: '绘制正方形', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  const from = point(650, 200); const to = point(730, 250)
+  await page.mouse.move(from.x, from.y); await page.mouse.down(); await page.mouse.move(to.x, to.y)
+  await expect(page.locator('.shape-preview')).toBeVisible()
+  await page.keyboard.down('Control')
+  const preview = (await page.locator('.shape-preview').boundingBox())!
+  expect(preview.width / preview.height).toBeCloseTo(1.6, 1)
+  await page.mouse.up(); await page.keyboard.up('Control')
+  await expect(page.getByTestId('layer-card').first()).toContainText('80 × 50 px')
+  const resize = (await page.getByTestId('resize-se').boundingBox())!
+  await page.keyboard.down('Control')
+  await page.mouse.move(resize.x + 5, resize.y + 5); await page.mouse.down()
+  await page.mouse.move(resize.x + 5 + 20 * scale, resize.y + 5 + 60 * scale); await page.mouse.up()
+  await page.keyboard.up('Control')
+  await expect(page.getByTestId('layer-card').first()).toContainText('100 × 110 px')
+  const saved = await downloadBytes(page, () => page.getByRole('button', { name: '保存项目', exact: false }).click())
+  const project = JSON.parse(saved.toString())
+  expect(project.version).toBe(2)
+  expect(project.layers[0].name).toBe('勇者')
+  expect(project.layers[1].kind).toBe('rectangle')
+  expect(project.layers[2].kind).toBe('ellipse')
+  await page.getByRole('button', { name: '导出', exact: true }).click()
+  const plain = await downloadBytes(page, () => page.getByRole('button', { name: '合成图片' }).click())
+  await page.getByRole('button', { name: '导出', exact: true }).click()
+  await page.getByRole('checkbox', { name: '包含坐标' }).check()
+  await page.getByRole('checkbox', { name: '包含名称' }).check()
+  const annotated = await downloadBytes(page, () => page.getByRole('button', { name: '合成图片' }).click())
+  const check = await page.evaluate(async ({ plain, annotated }) => {
+    async function pixels(src: string) {
+      const image = new Image(); image.src = src; await image.decode()
+      const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height
+      const ctx = canvas.getContext('2d')!; ctx.drawImage(image, 0, 0)
+      const pixel = (x: number, y: number) => Array.from(ctx.getImageData(x, y, 1, 1).data)
+      return { width: image.width, height: image.height, squareCenter: pixel(100, 100), squareEdge: pixel(40, 100), leftCoordinate: pixel(288, 230), rightCoordinate: pixel(510, 360), centerCoordinate: pixel(410, 300), namePlate: pixel(395, 351) }
+    }
+    return { plain: await pixels(plain), annotated: await pixels(annotated) }
+  }, { plain: `data:image/png;base64,${plain.toString('base64')}`, annotated: `data:image/png;base64,${annotated.toString('base64')}` })
+  expect(check.plain.width).toBe(800); expect(check.annotated.height).toBe(600)
+  expect(check.plain.squareCenter).toEqual([224, 224, 224, 255])
+  expect(check.plain.squareEdge).toEqual([83, 107, 221, 255])
+  expect(check.plain.leftCoordinate).toEqual([224, 224, 224, 255])
+  expect(check.annotated.leftCoordinate).toEqual([224, 224, 224, 255])
+  expect(check.annotated.rightCoordinate).toEqual([224, 224, 224, 255])
+  expect(check.annotated.centerCoordinate[0]).toBeLessThan(160)
+  expect(check.annotated.centerCoordinate[1]).toBeGreaterThan(50)
+  expect(check.annotated.centerCoordinate[2]).toBeGreaterThan(130)
+  expect(check.annotated.namePlate[0]).toBeGreaterThan(235)
+  expect(check.annotated.namePlate[0]).toBeLessThan(255)
+  await page.getByTestId('project-input').setInputFiles({ name: 'shapes.frame.json', mimeType: 'application/json', buffer: saved })
+  await expect(page.getByTestId('image-layer')).toHaveCount(6)
+  await page.getByTestId('layer-card').last().click()
+  await expect(page.getByTestId('object-name').first()).toHaveText('勇者')
+  await page.getByTestId('layer-card').last().click()
+  await page.screenshot({ path: 'test-results/frame-shapes.png', fullPage: true })
+  const legacy = { ...project, version: 1, layers: [{ ...project.layers[0], kind: undefined }] }
+  await page.getByTestId('project-input').setInputFiles({ name: 'legacy.frame.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(legacy)) })
+  await expect(page.getByTestId('image-layer')).toHaveCount(1)
+  await expect(page.getByTestId('object-name')).toHaveText('勇者')
+})
+
+test('nine anchors, color controls, translucent fills, shortcuts, and persistence', async ({ page }) => {
+  await page.goto('/')
+  await page.getByTestId('background-input').setInputFiles(await imageFile(page, 'bg.png', 800, 600, '#e0e0e0'))
+  await page.getByTestId('layer-input').setInputFiles(await imageFile(page, 'actor.png', 200, 100, '#f00'))
+  await expect(page.getByTestId('anchor-grid').locator('small')).toHaveText(['topleft', 'midtop', 'topright', 'midleft', 'center', 'midright', 'bottomleft', 'midbottom', 'bottomright'])
+  await expect(page.getByTestId('anchor-grid').locator('b')).toHaveText(['(300, 250)', '(400, 250)', '(500, 250)', '(300, 300)', '(400, 300)', '(500, 300)', '(300, 350)', '(400, 350)', '(500, 350)'])
+  const labelStyles = await page.evaluate(() => ({ coordinate: getComputedStyle(document.querySelector('.selection-tag')!).backgroundColor, name: getComputedStyle(document.querySelector('.object-name')!).backgroundColor, coordinateZ: +getComputedStyle(document.querySelector('.coordinate-overlay')!).zIndex, nameZ: +getComputedStyle(document.querySelector('.name-overlay')!).zIndex }))
+  expect(labelStyles.coordinate).toContain('0.68')
+  expect(labelStyles.name).toContain('0.65')
+  expect(labelStyles.coordinateZ).toBeGreaterThan(labelStyles.nameZ)
+  await page.getByTestId('edit-name').click()
+  await page.getByRole('textbox', { name: '角色 / 物品名称' }).fill('123')
+  await page.getByRole('textbox', { name: '角色 / 物品名称' }).press('3')
+  await expect(page.getByRole('button', { name: '选择工具', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await page.getByRole('heading', { name: 'bg.png' }).click()
+  await page.keyboard.press('2')
+  await expect(page.getByRole('button', { name: '绘制正方形' })).toHaveAttribute('aria-pressed', 'true')
+  await page.getByRole('button', { name: '边框红色' }).click()
+  await page.getByRole('button', { name: '填充绿色' }).click()
+  const box = (await page.getByTestId('stage').boundingBox())!
+  const scale = box.width / 800
+  await page.mouse.move(box.x + 50 * scale, box.y + 100 * scale)
+  await page.mouse.down(); await page.mouse.move(box.x + 150 * scale, box.y + 150 * scale); await page.mouse.up()
+  await expect(page.getByTestId('top-left-label')).toHaveText('(50, 100)')
+  await expect(page.getByTestId('bottom-right-label')).toHaveText('(150, 200)')
+  await expect(page.getByTestId('center-label')).toHaveCount(0)
+  await expect(page.getByTestId('layer-card').first()).toContainText('中心点 (100, 150)')
+  await page.getByRole('button', { name: '填充紫色' }).click()
+  const saved = await downloadBytes(page, () => page.getByRole('button', { name: '保存项目', exact: false }).click())
+  const project = JSON.parse(saved.toString())
+  expect(project.layers[1]).toMatchObject({ color: '#ef4444', fillColor: '#a855f7' })
+  await page.getByRole('button', { name: '导出', exact: true }).click()
+  const png = await downloadBytes(page, () => page.getByRole('button', { name: '合成图片' }).click())
+  const center = await page.evaluate(async src => {
+    const img = new Image(); img.src = src; await img.decode()
+    const canvas = document.createElement('canvas'); canvas.width = img.width; canvas.height = img.height
+    const ctx = canvas.getContext('2d')!; ctx.drawImage(img, 0, 0)
+    return Array.from(ctx.getImageData(100, 150, 1, 1).data)
+  }, `data:image/png;base64,${png.toString('base64')}`)
+  expect(center[0]).toBeGreaterThan(200); expect(center[0]).toBeLessThan(220)
+  expect(center[1]).toBeGreaterThan(180); expect(center[1]).toBeLessThan(200)
+  expect(center[2]).toBeGreaterThan(224); expect(center[2]).toBeLessThan(240)
+  await page.getByRole('button', { name: '无填充' }).click()
+  await expect(page.getByTestId('image-layer').last().locator('rect')).toHaveAttribute('fill', 'none')
+  page.once('dialog', dialog => dialog.accept())
+  await page.getByTestId('project-input').setInputFiles({ name: 'saved.json', mimeType: 'application/json', buffer: saved })
+  await expect(page.getByRole('button', { name: '填充紫色' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByTestId('image-layer').last().locator('rect')).toHaveAttribute('fill', '#a855f7')
+  await page.keyboard.press('3')
+  await expect(page.getByRole('button', { name: '绘制圆形' })).toHaveAttribute('aria-pressed', 'true')
+  await page.keyboard.press('1')
+  await expect(page.getByRole('button', { name: '选择工具', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await page.getByTestId('layer-card').last().click()
+  await page.screenshot({ path: 'test-results/frame-anchors.png', fullPage: true })
+})
+
+test('names stay behind characters, cards reorder actual layers, and icon deletion targets its card', async ({ page }) => {
+  await page.goto('/')
+  const bg = await imageFile(page, 'bg.png', 800, 600, '#e0e0e0')
+  const red = await imageFile(page, 'red.png', 100, 100, '#ff0000')
+  const blue = await imageFile(page, 'blue.png', 100, 80, '#0000ff')
+  const src = (file: typeof bg) => `data:image/png;base64,${file.buffer.toString('base64')}`
+  const project = { version: 2, background: { name: 'bg.png', src: src(bg), width: 800, height: 600 }, layers: [
+    { id: 'blue', kind: 'image', name: '蓝色角色', src: src(blue), x: 100, y: 190, width: 100, height: 80 },
+    { id: 'red', kind: 'image', name: '红色角色', src: src(red), x: 100, y: 100, width: 100, height: 100 },
+  ] }
+  await page.getByTestId('project-input').setInputFiles({ name: 'overlap.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(project)) })
+  await expect(page.getByTestId('image-layer')).toHaveCount(2)
+  const boxes = await page.evaluate(() => ({ name: +getComputedStyle(document.querySelector('.name-overlay')!).zIndex, objects: [...document.querySelectorAll('.image-layer')].map(element => +getComputedStyle(element).zIndex) }))
+  expect(boxes.objects.every(index => index > boxes.name)).toBe(true)
+  await page.getByRole('button', { name: '导出', exact: true }).click()
+  await page.getByRole('checkbox', { name: '包含名称' }).check()
+  const png = await downloadBytes(page, () => page.getByRole('button', { name: '合成图片' }).click())
+  async function pixels(buffer: Buffer) {
+    return page.evaluate(async data => {
+      const image = new Image(); image.src = data; await image.decode()
+      const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height
+      const ctx = canvas.getContext('2d')!; ctx.drawImage(image, 0, 0)
+      return { overlap: Array.from(ctx.getImageData(150, 195, 1, 1).data), coveredName: Array.from(ctx.getImageData(150, 205, 1, 1).data) }
+    }, `data:image/png;base64,${buffer.toString('base64')}`)
+  }
+  expect(await pixels(png)).toEqual({ overlap: [255, 0, 0, 255], coveredName: [0, 0, 255, 255] })
+  const target = page.getByTestId('layer-card').last()
+  const targetBox = (await target.boundingBox())!
+  await page.getByTestId('layer-card').first().dragTo(target, { targetPosition: { x: 80, y: targetBox.height - 8 } })
+  await expect(page.getByTestId('layer-card').first()).toContainText('蓝色角色')
+  await expect(page.getByTestId('image-layer').last()).toHaveAttribute('data-layer-id', 'blue')
+  await expect(page.getByTestId('image-layer').first()).toHaveAttribute('aria-pressed', 'true')
+  const saved = await downloadBytes(page, () => page.getByRole('button', { name: '保存项目', exact: false }).click())
+  expect(JSON.parse(saved.toString()).layers.map((layer: { id: string }) => layer.id)).toEqual(['red', 'blue'])
+  await page.getByRole('button', { name: '导出', exact: true }).click()
+  const reorderedPng = await downloadBytes(page, () => page.getByRole('button', { name: '合成图片' }).click())
+  expect(await pixels(reorderedPng)).toEqual({ overlap: [0, 0, 255, 255], coveredName: [0, 0, 255, 255] })
+  await page.getByTestId('project-input').setInputFiles({ name: 'reordered.json', mimeType: 'application/json', buffer: saved })
+  await expect(page.getByTestId('layer-card').first()).toContainText('蓝色角色')
+  await page.getByTestId('layer-card').last().getByRole('button', { name: '删除图片', exact: true }).click()
+  await expect(page.getByTestId('image-layer')).toHaveCount(1)
+  await expect(page.getByTestId('layer-card')).toContainText('蓝色角色')
+  await page.screenshot({ path: 'test-results/frame-layer-order.png', fullPage: true })
+})
+
+test('copy, repeated paste, cut, snapshots, shape styles, and text input clipboard protection', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByRole('button', { name: '粘贴图层' })).toHaveCount(0)
+  await page.getByTestId('background-input').setInputFiles(await imageFile(page, 'bg.png', 800, 600, '#e0e0e0'))
+  await page.getByTestId('layer-input').setInputFiles(await imageFile(page, 'hero.png', 200, 100, '#f00'))
+  await page.getByRole('heading', { name: 'bg.png' }).click()
+  await page.keyboard.press('Control+c')
+  await expect(page.getByTestId('image-layer')).toHaveCount(1)
+  await rename(page, '修改后的原图')
+  await page.getByRole('heading', { name: 'bg.png' }).click()
+  await page.keyboard.press('Control+v')
+  await expect(page.getByTestId('image-layer')).toHaveCount(2)
+  await expect(page.getByTestId('layer-card').first()).toContainText('hero.png')
+  await expect(page.getByTestId('layer-card').first()).toContainText('(320, 270)')
+  const ids = await page.getByTestId('image-layer').evaluateAll(elements => elements.map(element => element.getAttribute('data-layer-id')))
+  expect(new Set(ids).size).toBe(2)
+  await page.keyboard.press('Control+v')
+  await expect(page.getByTestId('image-layer')).toHaveCount(3)
+  await expect(page.getByTestId('layer-card').first()).toContainText('(340, 290)')
+  await page.keyboard.press('Control+x')
+  await expect(page.getByTestId('image-layer')).toHaveCount(2)
+  await page.keyboard.press('Control+v')
+  await expect(page.getByTestId('image-layer')).toHaveCount(3)
+  await expect(page.getByTestId('layer-card').first()).toContainText('(340, 290)')
+  await page.getByTestId('layer-card').first().getByTestId('edit-name').click()
+  await page.keyboard.press('Control+a')
+  await page.keyboard.press('Control+x')
+  await expect(page.getByTestId('image-layer')).toHaveCount(3)
+  await expect(page.getByRole('textbox', { name: '角色 / 物品名称' })).toHaveValue('')
+  await page.keyboard.press('Control+v')
+  await expect(page.getByTestId('image-layer')).toHaveCount(3)
+  await expect(page.getByRole('textbox', { name: '角色 / 物品名称' })).toHaveValue('hero.png')
+  await page.getByRole('heading', { name: 'bg.png' }).click()
+  await page.keyboard.press('2')
+  await page.getByRole('button', { name: '边框红色' }).click()
+  await page.getByRole('button', { name: '填充绿色' }).click()
+  const box = (await page.getByTestId('stage').boundingBox())!
+  const scale = box.width / 800
+  await page.mouse.move(box.x + 100 * scale, box.y + 100 * scale)
+  await page.mouse.down(); await page.mouse.move(box.x + 160 * scale, box.y + 160 * scale); await page.mouse.up()
+  await page.keyboard.press('Control+c')
+  await page.keyboard.press('Control+v')
+  await expect(page.getByTestId('image-layer')).toHaveCount(5)
+  await expect(page.getByTestId('image-layer').last().locator('rect')).toHaveAttribute('stroke', '#ef4444')
+  await expect(page.getByTestId('image-layer').last().locator('rect')).toHaveAttribute('fill', '#22c55e')
+  await expect(page.getByTestId('layer-card').first()).toContainText('(120, 120)')
+  await page.keyboard.press('Control+x')
+  await expect(page.getByTestId('image-layer')).toHaveCount(4)
+  await page.keyboard.press('Control+v')
+  await expect(page.getByTestId('image-layer')).toHaveCount(5)
+  await expect(page.getByTestId('layer-card').first()).toContainText('(120, 120)')
+  const saved = await downloadBytes(page, () => page.getByRole('button', { name: '保存项目', exact: false }).click())
+  const project = JSON.parse(saved.toString())
+  expect(new Set(project.layers.map((layer: { id: string }) => layer.id)).size).toBe(5)
+  expect(project.layers[4]).toMatchObject({ kind: 'rectangle', color: '#ef4444', fillColor: '#22c55e' })
+  expect(project.layers[4].x).toBeCloseTo(120, 2)
+  expect(project.layers[4].y).toBeCloseTo(120, 2)
+  expect(project.layers[4].width).toBeCloseTo(60, 2)
+  expect(project.layers[4].height).toBeCloseTo(60, 2)
+})
+
+test('new images stagger across batches and individual additions without affecting failed loads', async ({ page }) => {
+  await page.goto('/')
+  await page.getByTestId('background-input').setInputFiles(await imageFile(page, 'bg.png', 800, 600, '#e0e0e0'))
+  const sprite = await imageFile(page, 'actor.png', 200, 100, '#f00')
+  await page.getByTestId('layer-input').setInputFiles([sprite, { ...sprite, name: 'actor2.png' }])
+  await expect(page.getByTestId('image-layer')).toHaveCount(2)
+  await expect(page.getByTestId('layer-card').first()).toContainText('(320, 270)')
+  await expect(page.getByTestId('layer-card').last()).toContainText('(300, 250)')
+  await page.getByTestId('layer-input').setInputFiles({ ...sprite, name: 'actor3.png' })
+  await expect(page.getByTestId('layer-card').first()).toContainText('(340, 290)')
+  await page.getByTestId('layer-input').setInputFiles([sprite, { name: 'broken.png', mimeType: 'image/png', buffer: Buffer.from('broken') }])
+  await expect(page.locator('.toast[role="status"]')).toContainText('无法读取图片')
+  await expect(page.getByTestId('image-layer')).toHaveCount(3)
+  await page.getByTestId('layer-input').setInputFiles({ ...sprite, name: 'actor4.png' })
+  await expect(page.getByTestId('layer-card').first()).toContainText('(360, 310)')
+  await expect(page.getByRole('button', { name: /^(复制|剪切|粘贴)图层$/ })).toHaveCount(0)
+})
+
+test('inline name commit, cancel, blank labels, and numbers follow reordered cards', async ({ page }) => {
+  await page.goto('/')
+  await page.getByTestId('background-input').setInputFiles(await imageFile(page, 'bg.png', 800, 600, '#e0e0e0'))
+  const file = await imageFile(page, 'a.png', 100, 100, '#f00')
+  await page.getByTestId('layer-input').setInputFiles([file, { ...file, name: 'b.png' }])
+  await expect(page.getByRole('textbox')).toHaveCount(0)
+  await expect(page.getByTestId('layer-number')).toHaveText(['1', '2'])
+  await page.getByTestId('layer-card').last().getByTestId('edit-name').click()
+  const input = page.getByRole('textbox', { name: '角色 / 物品名称' })
+  await expect(input).toBeFocused()
+  await expect(page.getByTestId('layer-card').last()).toHaveAttribute('draggable', 'false')
+  await input.fill('主角')
+  await input.press('Enter')
+  await expect(page.getByTestId('layer-card').last().getByTestId('edit-name')).toHaveText('主角')
+  await page.getByTestId('layer-card').last().getByTestId('edit-name').click()
+  await input.fill('不应保存')
+  await input.press('Escape')
+  await expect(page.getByTestId('layer-card').last().getByTestId('edit-name')).toHaveText('主角')
+  await page.getByTestId('layer-card').last().getByTestId('edit-name').click()
+  await input.fill('配角')
+  await page.getByRole('heading', { name: 'bg.png' }).click()
+  await expect(page.getByTestId('layer-card').last().getByTestId('edit-name')).toHaveText('配角')
+  const first = page.getByTestId('layer-card').first()
+  await page.getByTestId('layer-card').last().dragTo(first, { targetPosition: { x: 60, y: 4 } })
+  await expect(page.getByTestId('layer-card').first().getByTestId('edit-name')).toHaveText('配角')
+  await expect(page.getByTestId('layer-number')).toHaveText(['1', '2'])
+  await page.getByTestId('layer-card').first().getByTestId('edit-name').click()
+  await input.fill(''); await input.press('Enter')
+  await expect(page.getByTestId('layer-card').first().getByTestId('edit-name')).toHaveText('未命名对象')
+  await expect(page.getByTestId('object-name')).toHaveCount(0)
+  await page.getByTestId('layer-card').last().getByRole('button', { name: '删除图片', exact: true }).click()
+  await expect(page.getByTestId('layer-number')).toHaveText(['1'])
+  await page.screenshot({ path: 'test-results/frame-inline-name.png', fullPage: true })
+})
+
+test('image names follow selection, export still includes all names, and A adds images', async ({ page }) => {
+  await page.goto('/')
+  const bg = await imageFile(page, 'bg.png', 800, 600, '#e0e0e0')
+  const sprite = await imageFile(page, 'hero.png', 100, 100, '#f00')
+  const src = (file: typeof bg) => `data:image/png;base64,${file.buffer.toString('base64')}`
+  const project = { version: 2, background: { name: 'bg.png', src: src(bg), width: 800, height: 600 }, layers: [
+    { id: 'first', kind: 'image', name: '甲', src: src(sprite), x: 100, y: 100, width: 100, height: 100 },
+    { id: 'second', kind: 'image', name: '乙', src: src(sprite), x: 350, y: 100, width: 100, height: 100 },
+  ] }
+  await page.getByTestId('project-input').setInputFiles({ name: 'names.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(project)) })
+  await expect(page.getByTestId('object-name')).toHaveText('乙')
+  await expect(page.locator('.sidebar-title .count')).toHaveCount(0)
+  await page.getByTestId('layer-card').last().click()
+  await expect(page.getByTestId('object-name')).toHaveText('甲')
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('object-name')).toHaveCount(0)
+  await page.getByRole('button', { name: '导出', exact: true }).click()
+  await page.getByRole('checkbox', { name: '包含名称' }).check()
+  const png = await downloadBytes(page, () => page.getByRole('button', { name: '合成图片' }).click())
+  const namePixels = await page.evaluate(async data => {
+    const image = new Image(); image.src = data; await image.decode()
+    const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height
+    const ctx = canvas.getContext('2d')!; ctx.drawImage(image, 0, 0)
+    return [ctx.getImageData(150, 201, 1, 1).data[0], ctx.getImageData(400, 201, 1, 1).data[0]]
+  }, `data:image/png;base64,${png.toString('base64')}`)
+  expect(namePixels.every(value => value > 235)).toBe(true)
+  const chooserPromise = page.waitForEvent('filechooser')
+  await page.keyboard.press('a')
+  const chooser = await chooserPromise
+  await chooser.setFiles(sprite)
+  await expect(page.getByTestId('image-layer')).toHaveCount(3)
+  await expect(page.getByTestId('object-name')).toHaveText('hero.png')
+  await page.getByTestId('layer-card').first().getByTestId('edit-name').click()
+  await page.getByRole('textbox', { name: '角色 / 物品名称' }).press('a')
+  await expect(page.getByRole('textbox', { name: '角色 / 物品名称' })).toHaveValue('a')
+  await expect(page.getByTestId('image-layer')).toHaveCount(3)
+})
+
+test('drag distance guides, overlap alignment, arrow nudging and input protection', async ({ page }) => {
+  await page.goto('/')
+  const bg = await imageFile(page, 'bg.png', 800, 600, '#e0e0e0')
+  const file = await imageFile(page, 'actor.png', 100, 100, '#ff0000')
+  const src = (image: typeof bg) => `data:image/png;base64,${image.buffer.toString('base64')}`
+  const project = { version: 2, background: { name: 'bg.png', src: src(bg), width: 800, height: 600 }, layers: [
+    { id: 'moving', name: '移动角色', src: src(file), x: 100, y: 100, width: 100, height: 100 },
+    { id: 'other', name: '参考角色', src: src(file), x: 250, y: 100, width: 100, height: 100 },
+  ] }
+  await page.getByTestId('project-input').setInputFiles({ name: 'guides.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(project)) })
+  await expect(page.getByTestId('image-layer')).toHaveCount(2)
+  const stage = (await page.getByTestId('stage').boundingBox())!
+  const scale = stage.width / 800
+  const actor = page.locator('[data-layer-id="moving"]')
+  let box = (await actor.boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width / 2 + 20 * scale, box.y + box.height / 2)
+  await expect(page.getByTestId('distance-value')).toHaveText('30 px')
+  await expect(page.getByTestId('center-label')).toHaveCount(0)
+  await expect(page.getByTestId('object-name')).toHaveCount(0)
+  await expect(page.getByTestId('alignment-guide')).toHaveCount(1)
+  await expect(page.getByTestId('layer-card').last()).toContainText('(120, 100)')
+  await page.screenshot({ path: 'test-results/frame-distance-guides.png', fullPage: true })
+  await page.mouse.up()
+  await expect(page.getByTestId('distance-guides')).toHaveCount(0)
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('ArrowUp')
+  await page.keyboard.press('Shift+ArrowRight')
+  await expect(page.getByTestId('layer-card').last()).toContainText('(131, 99)')
+  await expect(page.getByTestId('center-label')).toHaveText('(181, 149)')
+  await expect(page.getByTestId('distance-value')).toHaveText('19 px')
+  await page.getByTestId('layer-card').last().getByTestId('edit-name').click()
+  await page.getByRole('textbox', { name: '角色 / 物品名称' }).press('ArrowLeft')
+  await expect(page.getByTestId('layer-card').last()).toContainText('(131, 99)')
+  await page.getByRole('textbox', { name: '角色 / 物品名称' }).press('Enter')
+  box = (await actor.boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(stage.x + 300 * scale, stage.y + 150 * scale)
+  await expect(page.getByTestId('distance-value')).toHaveCount(0)
+  await expect(page.getByTestId('alignment-guide')).toHaveCount(2)
+  await page.mouse.up()
+  await expect(page.getByTestId('distance-guides')).toHaveCount(0)
+  const saved = await downloadBytes(page, () => page.getByRole('button', { name: '保存项目', exact: false }).click())
+  expect(JSON.parse(saved.toString())).not.toHaveProperty('guides')
+})
+
+test('shape-image distance, threshold, selected shape names, and keyboard guide updates', async ({ page }) => {
+  await page.goto('/')
+  const bg = await imageFile(page, 'bg.png', 800, 600, '#e0e0e0')
+  const sprite = await imageFile(page, 'actor.png', 100, 100, '#f00')
+  const src = (file: typeof bg) => `data:image/png;base64,${file.buffer.toString('base64')}`
+  const project = { version: 2, background: { name: 'bg.png', src: src(bg), width: 800, height: 600 }, layers: [
+    { id: 'shape', kind: 'rectangle', color: '#536bdd', name: '区域', x: 100, y: 100, width: 100, height: 100 },
+    { id: 'actor', kind: 'image', name: '角色', src: src(sprite), x: 250, y: 100, width: 100, height: 100 },
+  ] }
+  await page.getByTestId('project-input').setInputFiles({ name: 'mixed.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(project)) })
+  await expect(page.getByTestId('object-name')).toHaveText('角色')
+  await page.getByTestId('layer-card').last().click()
+  await expect(page.getByTestId('object-name')).toHaveText('区域')
+  const stage = (await page.getByTestId('stage').boundingBox())!
+  const scale = stage.width / 800
+  const shape = page.locator('[data-layer-id="shape"]')
+  const box = (await shape.boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width / 2 + 5 * scale, box.y + box.height / 2)
+  await expect(page.getByTestId('distance-guides')).toHaveCount(0)
+  await expect(page.getByTestId('object-name')).toHaveText('区域')
+  await page.mouse.move(box.x + box.width / 2 + 25 * scale, box.y + box.height / 2)
+  await expect(page.getByTestId('distance-value')).toHaveText('25 px')
+  await expect(page.getByTestId('object-name')).toHaveCount(0)
+  await expect(page.getByTestId('top-left-label')).toHaveCount(0)
+  await page.mouse.up()
+  await expect(page.getByTestId('top-left-label')).toHaveText('(125, 100)')
+  await expect(page.getByTestId('object-name')).toHaveText('区域')
+  await page.keyboard.press('ArrowRight')
+  await expect(page.getByTestId('top-left-label')).toHaveText('(126, 100)')
+  await expect(page.getByTestId('distance-value')).toHaveText('24 px')
+  await page.keyboard.press('ArrowRight')
+  await expect(page.getByTestId('distance-value')).toHaveText('23 px')
+  await page.getByTestId('layer-card').first().click()
+  await expect(page.getByTestId('distance-guides')).toHaveCount(0)
+  await page.keyboard.press('ArrowLeft')
+  await expect(page.getByTestId('center-label')).toHaveText('(299, 150)')
+  await expect(page.getByTestId('distance-value')).toHaveText('22 px')
+  await expect(page.getByTestId('object-name')).toHaveCount(0)
+  await page.keyboard.press('Shift+ArrowRight')
+  await expect(page.getByTestId('distance-value')).toHaveText('32 px')
+  await page.keyboard.press('Shift+ArrowRight')
+  await expect(page.getByTestId('distance-guides')).toHaveCount(0)
+  await expect(page.getByTestId('object-name')).toHaveText('角色')
+})
+
+test('canvas selection scrolls only the layer list to the selected card', async ({ page }) => {
+  await page.goto('/')
+  const bg = await imageFile(page, 'bg.png', 800, 600, '#e0e0e0')
+  const file = await imageFile(page, 'actor.png', 40, 40, '#f00')
+  const data = (image: typeof bg) => `data:image/png;base64,${image.buffer.toString('base64')}`
+  const project = { version: 2, background: { name: 'bg.png', src: data(bg), width: 800, height: 600 }, layers: Array.from({ length: 20 }, (_, index) => ({ id: `actor-${index}`, name: `角色 ${index + 1}`, src: data(file), x: 50 + index % 5 * 130, y: 60 + Math.floor(index / 5) * 120, width: 40, height: 40 })) }
+  await page.getByTestId('project-input').setInputFiles({ name: 'many.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(project)) })
+  await expect(page.getByTestId('image-layer')).toHaveCount(20)
+  const list = page.locator('.layer-list')
+  await list.evaluate(element => { element.scrollTop = 0 })
+  await page.locator('[data-layer-id="actor-0"]').click()
+  const card = page.locator('[data-card-id="actor-0"]')
+  await expect(card).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(() => list.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
+  const visible = await card.evaluate(element => {
+    const bounds = element.getBoundingClientRect(), container = element.parentElement!.getBoundingClientRect()
+    return bounds.top >= container.top - 1 && bounds.bottom <= container.bottom + 1
+  })
+  expect(visible).toBe(true)
+  const scroll = await list.evaluate(element => element.scrollTop)
+  await page.locator('[data-layer-id="actor-0"]').click()
+  expect(await list.evaluate(element => element.scrollTop)).toBe(scroll)
+  await page.locator('[data-layer-id="actor-19"]').click()
+  await expect(page.locator('[data-card-id="actor-19"]')).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(() => list.evaluate(element => element.scrollTop)).toBeLessThan(scroll)
+  expect(await page.evaluate(() => window.scrollY)).toBe(0)
+})
