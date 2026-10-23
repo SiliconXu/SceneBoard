@@ -4,6 +4,7 @@ import { anchorPoints, clamp, drawRect, fitImage, moveRect, resizeFreeRect, resi
 import { coordinateData, isImageLayer, parseProject, type Background, type ImageLayer, type Layer, type Project, type ShapeLayer } from './project'
 import { decodeImage, download, downloadJson, readImage } from './files'
 import { renderComposition } from './render'
+import { imageExportInfo, renderImageExport } from './image-export'
 import ShapeView from './ShapeView.vue'
 import EditableName from './EditableName.vue'
 import DistanceGuides from './DistanceGuides.vue'
@@ -30,6 +31,16 @@ const message = ref('')
 const isError = ref(false)
 const busy = ref(false)
 const showExport = ref(false)
+const objectMenu = ref<{ id: string; x: number; y: number } | null>(null)
+const objectMenuElement = ref<HTMLElement>()
+let objectMenuOrigin: HTMLElement | null = null
+const selectedImage = computed(() => selected.value && isImageLayer(selected.value) ? selected.value : null)
+const selectedExportInfo = computed(() => selectedImage.value ? imageExportInfo(selectedImage.value) : null)
+const contextImage = computed(() => {
+  const layer = layers.value.find(item => item.id === objectMenu.value?.id)
+  return layer && isImageLayer(layer) ? layer : null
+})
+const contextExportInfo = computed(() => contextImage.value ? imageExportInfo(contextImage.value) : null)
 const confirmReplace = ref(false)
 const dirty = ref(false)
 const tool = ref<'select' | 'rectangle' | 'ellipse'>('select')
@@ -217,6 +228,7 @@ function pasteLayer() {
 }
 
 function startLayerDrag(event: DragEvent, id: string) {
+  closeObjectMenu()
   if (busy.value || (event.target as HTMLElement).closest('.layer-delete')) { event.preventDefault(); return }
   cancelDrawing(); endGesture()
   draggedLayerId.value = id
@@ -390,6 +402,42 @@ const layerStyle = (layer: Layer, index: number) => ({ left: `${layer.x * scale.
 const errorText = (error: unknown) => error instanceof Error ? error.message : '操作失败，请重试。'
 const fileStem = () => (background.value?.name.replace(/\.[^.]+$/, '') || 'frame')
 
+function closeObjectMenu() { objectMenu.value = null }
+
+async function openObjectMenu(event: MouseEvent, layer: Layer) {
+  if ((event.target as HTMLElement).closest('input, textarea, [contenteditable="true"]')) return
+  event.preventDefault()
+  closeObjectMenu()
+  if (busy.value || !isImageLayer(layer)) return
+  chooseLayer(layer.id)
+  showExport.value = false
+  objectMenuOrigin = event.currentTarget as HTMLElement
+  objectMenu.value = { id: layer.id, x: event.clientX, y: event.clientY }
+  await nextTick()
+  const box = objectMenuElement.value?.getBoundingClientRect()
+  if (!box || !objectMenu.value) return
+  objectMenu.value.x = Math.max(8, Math.min(event.clientX, window.innerWidth - box.width - 8))
+  objectMenu.value.y = Math.max(8, Math.min(event.clientY, window.innerHeight - box.height - 8))
+  objectMenuElement.value?.querySelector('button')?.focus({ preventScroll: true })
+}
+
+function dismissObjectMenu(event: PointerEvent) {
+  if (!(event.target as HTMLElement).closest('.object-export-menu')) closeObjectMenu()
+}
+
+async function exportObject(layer: ImageLayer | null) {
+  if (!layer || busy.value) return
+  const snapshot = { ...layer }
+  showExport.value = false
+  closeObjectMenu()
+  busy.value = true
+  try {
+    const { blob, filename } = await renderImageExport(snapshot)
+    if (await download(blob, filename)) notify('对象图片已导出')
+  } catch (error) { notify(errorText(error), true) }
+  finally { busy.value = false }
+}
+
 async function exportCoordinates() {
   if (!background.value) return
   showExport.value = false
@@ -467,6 +515,14 @@ async function exportPng() {
 }
 
 function onKeydown(event: KeyboardEvent) {
+  if (objectMenu.value) {
+    if (event.key === 'Escape' || event.key === 'Tab') {
+      closeObjectMenu()
+      if (event.key === 'Escape') { event.preventDefault(); objectMenuOrigin?.focus({ preventScroll: true }) }
+      return
+    }
+    if (!['Enter', ' '].includes(event.key)) { event.preventDefault(); return }
+  }
   ctrlPressed.value = event.ctrlKey
   if (event.key === 'Control') refreshDrawing()
   if (confirmReplace.value) { if (event.key === 'Escape') cancelReplace(); return }
@@ -504,18 +560,20 @@ function onKeydown(event: KeyboardEvent) {
   if ((event.key === 'Delete' || event.key === 'Backspace') && selected.value) { event.preventDefault(); removeSelected() }
 }
 function onKeyup(event: KeyboardEvent) { ctrlPressed.value = event.ctrlKey; if (event.key === 'Control') refreshDrawing() }
-function onBlur() { ctrlPressed.value = false; cancelDrawing(); endGesture(); endPan() }
+function onBlur() { closeObjectMenu(); ctrlPressed.value = false; cancelDrawing(); endGesture(); endPan() }
 function beforeUnload(event: BeforeUnloadEvent) { if (dirty.value && background.value) { event.preventDefault(); event.returnValue = '' } }
 function closeExport(event: MouseEvent) { if (!(event.target as HTMLElement).closest('.export-wrap')) showExport.value = false }
 
 onMounted(() => {
-  observer = new ResizeObserver(() => { cancelDrawing(); endGesture(); endPan(); fitStage() })
+  observer = new ResizeObserver(() => { closeObjectMenu(); cancelDrawing(); endGesture(); endPan(); fitStage() })
   if (workspace.value) observer.observe(workspace.value)
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('keyup', onKeyup)
   window.addEventListener('blur', onBlur)
   window.addEventListener('beforeunload', beforeUnload)
   document.addEventListener('click', closeExport)
+  document.addEventListener('pointerdown', dismissObjectMenu)
+  document.addEventListener('scroll', closeObjectMenu, true)
 })
 onBeforeUnmount(() => {
   cancelDrawing(); endGesture(); endPan(); observer?.disconnect(); clearTimeout(toastTimer)
@@ -524,6 +582,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('blur', onBlur)
   window.removeEventListener('beforeunload', beforeUnload)
   document.removeEventListener('click', closeExport)
+  document.removeEventListener('pointerdown', dismissObjectMenu)
+  document.removeEventListener('scroll', closeObjectMenu, true)
 })
 </script>
 
@@ -540,6 +600,7 @@ onBeforeUnmount(() => {
         <div class="export-wrap">
           <button class="button primary" aria-label="导出" :disabled="!background || busy" :aria-expanded="showExport" @click="showExport = !showExport">导出<span class="chevron" aria-hidden="true">⌄</span></button>
           <div v-if="showExport" class="export-menu">
+            <button class="object-export-action" :disabled="!selectedImage || busy" @click="exportObject(selectedImage)">导出选中对象…<small v-if="selectedExportInfo">{{ selectedExportInfo.width }} × {{ selectedExportInfo.height }} px · {{ selectedExportInfo.label }}</small><small v-else>请先选择角色或物品图片</small></button>
             <div class="export-options"><strong>PNG 标注选项</strong><label><input v-model="exportCoordinatesOption" type="checkbox" />包含坐标</label><label><input v-model="exportNamesOption" type="checkbox" />包含名称</label><small>应用于所有图片和图形</small></div>
             <button @click="exportPng">合成图片 <span>PNG</span></button>
             <button @click="exportCoordinates">导出坐标 <span>JSON</span></button>
@@ -587,10 +648,10 @@ onBeforeUnmount(() => {
 
       <aside class="sidebar">
         <div class="sidebar-title"><h2>对象图层</h2></div>
-        <p class="sidebar-description">拖曳卡片调整顺序，越靠上显示在越上层。</p>
+        <p class="sidebar-description">拖曳调整顺序，越靠上越在上层；右击导出图片。</p>
         <div ref="layerList" class="layer-list" @dragend="endLayerDrag" @dragleave.self="dropTarget = null">
           <div v-if="!layers.length" class="empty-layers"><span class="stack-icon">▱<br />▱</span><strong>还没有添加图片</strong><p>{{ background ? '添加角色或物品，开始摆放。' : '加载背景后，在这里管理图片。' }}</p><button v-if="background" class="text-button" :disabled="busy" @click="layerInput?.click()">＋ 添加第一张图片</button></div>
-          <div v-for="(layer, index) in [...layers].reverse()" :key="layer.id" class="layer-card" :class="{ active: layer.id === selectedId, dragging: draggedLayerId === layer.id, 'drop-before': dropTarget?.id === layer.id && dropTarget.before, 'drop-after': dropTarget?.id === layer.id && !dropTarget.before }" role="button" tabindex="0" :aria-label="`选择图层 ${layer.name || '未命名对象'}`" :aria-pressed="layer.id === selectedId" :draggable="!busy && editingLayerId !== layer.id" :data-card-id="layer.id" data-testid="layer-card" @click="chooseLayer(layer.id)" @keydown.enter.self="chooseLayer(layer.id)" @keydown.space.self.prevent="chooseLayer(layer.id)" @dragstart="startLayerDrag($event, layer.id)" @dragover.prevent="previewLayerDrop($event, layer.id)" @drop.stop.prevent="dropLayer($event, layer.id)">
+          <div v-for="(layer, index) in [...layers].reverse()" :key="layer.id" class="layer-card" :class="{ active: layer.id === selectedId, dragging: draggedLayerId === layer.id, 'drop-before': dropTarget?.id === layer.id && dropTarget.before, 'drop-after': dropTarget?.id === layer.id && !dropTarget.before }" role="button" tabindex="0" :aria-label="`选择图层 ${layer.name || '未命名对象'}`" :aria-pressed="layer.id === selectedId" :draggable="!busy && editingLayerId !== layer.id" :data-card-id="layer.id" data-testid="layer-card" @contextmenu="openObjectMenu($event, layer)" @click="chooseLayer(layer.id)" @keydown.enter.self="chooseLayer(layer.id)" @keydown.space.self.prevent="chooseLayer(layer.id)" @dragstart="startLayerDrag($event, layer.id)" @dragover.prevent="previewLayerDrop($event, layer.id)" @drop.stop.prevent="dropLayer($event, layer.id)">
             <button class="layer-delete" :aria-label="`删除${isImageLayer(layer) ? '图片' : '图形'}`" :title="`删除 ${layer.name || '未命名对象'}`" :disabled="busy" draggable="false" @click.stop="removeLayer(layer.id)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7m4-7v7" /></svg></button>
             <div class="layer-card-header"><span class="layer-number" data-testid="layer-number" :title="`图层顺序 ${index + 1}`">{{ index + 1 }}</span><div class="thumbnail"><img v-if="isImageLayer(layer)" :src="layer.src" alt="" draggable="false" /><span v-else class="shape-thumbnail" :class="layer.kind" :style="{ borderColor: layer.color, backgroundColor: layer.fillColor ? `${layer.fillColor}40` : 'transparent' }"></span></div><div class="layer-name"><EditableName :name="layer.name" :disabled="busy" @select="chooseLayer(layer.id)" @rename="renameLayer(layer.id, $event)" @editing="setNameEditing(layer.id, $event)" /><small>{{ round(layer.width) }} × {{ round(layer.height) }} px</small></div></div>
             <div v-if="isImageLayer(layer) && layer.id === selectedId" class="anchor-grid" data-testid="anchor-grid"><span v-for="(point, key) in anchorPoints(layer)" :key="key"><small>{{ key }}</small><b>{{ formatPoint(point.x, point.y) }}</b></span></div>
@@ -602,6 +663,9 @@ onBeforeUnmount(() => {
       </aside>
     </main>
     <footer class="app-footer"><span>VULCODING / IMAGE COORDINATE STUDIO</span><span>本机编辑，精确定位。<i></i>无需上传</span></footer>
+    <div v-if="objectMenu && contextImage && contextExportInfo" ref="objectMenuElement" class="object-export-menu" role="menu" aria-label="图片对象操作" :style="{ left: `${objectMenu.x}px`, top: `${objectMenu.y}px` }" @contextmenu.prevent>
+      <button role="menuitem" :disabled="busy" @click="exportObject(contextImage)">导出此对象…<small>{{ contextExportInfo.width }} × {{ contextExportInfo.height }} px · {{ contextExportInfo.label }}</small></button>
+    </div>
     <div v-if="busy" class="busy-indicator" role="status">正在处理图片…</div>
     <div v-if="message" class="toast" :class="{ error: isError }" role="status"><span>{{ isError ? '!' : '✓' }}</span>{{ message }}<button aria-label="关闭提示" @click="message = ''">×</button></div>
     <div v-if="confirmReplace" class="modal-backdrop" @click.self="cancelReplace">

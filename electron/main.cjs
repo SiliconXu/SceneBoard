@@ -36,11 +36,13 @@ app.whenReady().then(() => {
     if (typeof filename !== 'string' || filename.length > 250 || !(bytes instanceof Uint8Array)) throw new Error('保存文件的数据无效。')
     const safeName = path.basename(filename).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
     const project = safeName.endsWith('.frame.json')
-    if (!/\.(json|png)$/i.test(safeName)) throw new Error('不支持的文件类型。')
+    const extension = path.extname(safeName).slice(1).toLowerCase()
+    const formats = { json: 'JSON 文件', png: 'PNG 图片', jpg: 'JPEG 图片', jpeg: 'JPEG 图片', webp: 'WebP 图片' }
+    if (!Object.hasOwn(formats, extension)) throw new Error('不支持的文件类型。')
     const result = await dialog.showSaveDialog(mainWindow, {
       title: project ? '保存项目到便携目录' : '导出到便携目录',
       defaultPath: path.join(root, project ? 'projects' : 'exports', safeName),
-      filters: [{ name: safeName.endsWith('.png') ? 'PNG 图片' : 'JSON 文件', extensions: [safeName.endsWith('.png') ? 'png' : 'json'] }],
+      filters: [{ name: formats[extension], extensions: [extension] }],
     })
     if (result.canceled || !result.filePath) return false
     const realRoot = await fsp.realpath(root)

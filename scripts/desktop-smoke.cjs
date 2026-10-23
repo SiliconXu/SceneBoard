@@ -45,6 +45,28 @@ const assert = require('node:assert/strict')
     await page.getByRole('button', { name: '合成图片' }).click()
     await expect(page.getByRole('status')).toContainText('合成 PNG 已导出')
     assert.equal((await fs.readFile(pngPath)).subarray(1, 4).toString(), 'PNG')
+    // Single-object export must reach the desktop save bridge for every source format.
+    for (const format of ['png', 'jpeg', 'webp']) {
+      const image = await page.evaluate(format => {
+        const canvas = document.createElement('canvas'); canvas.width = 20; canvas.height = 10
+        const ctx = canvas.getContext('2d'); ctx.fillStyle = 'rgba(0,255,0,.5)'; ctx.fillRect(0, 0, 10, 10)
+        return canvas.toDataURL(`image/${format}`, 1).split(',')[1]
+      }, format)
+      const extension = format === 'jpeg' ? 'jpg' : format
+      await page.getByTestId('layer-input').setInputFiles({ name: `sprite.${extension}`, mimeType: `image/${format}`, buffer: Buffer.from(image, 'base64') })
+      const target = path.join(root, 'exports', `sprite-smoke.${extension}`)
+      await application.evaluate(({ dialog }, target) => { dialog.showSaveDialog = async (_window, options) => { globalThis.objectExportOptions = options; return { canceled: false, filePath: target } } }, target)
+      await page.getByRole('button', { name: '导出', exact: true }).click()
+      await page.getByRole('button', { name: '导出选中对象' }).click()
+      await expect(page.locator('.toast')).toContainText('对象图片已导出')
+      const output = await fs.readFile(target)
+      const options = await application.evaluate(() => globalThis.objectExportOptions)
+      assert.deepEqual(options.filters[0].extensions, [extension])
+      if (format === 'png') assert.equal(output.subarray(1, 4).toString(), 'PNG')
+      else if (format === 'jpeg') assert.deepEqual([...output.subarray(0, 3)], [255, 216, 255])
+      else assert.equal(output.subarray(8, 12).toString(), 'WEBP')
+      await page.getByRole('button', { name: '删除图片' }).first().click()
+    }
     await page.getByRole('button', { name: '导出', exact: true }).click()
     await page.getByRole('button', { name: '复制坐标' }).click()
     const copied = await application.evaluate(({ clipboard }) => clipboard.readText())
@@ -56,6 +78,6 @@ const assert = require('node:assert/strict')
     await page.getByTestId('project-input').setInputFiles(projectPath)
     await expect(page.locator('.toast')).toContainText('项目已恢复')
     await expect(page.getByTestId('image-layer')).toHaveCount(1)
-    console.log('Desktop smoke passed: local assets, portable paths, project/PNG save, canceled save, path restriction, clipboard.')
+    console.log('Desktop smoke passed: local assets, portable paths, project/PNG save, PNG/JPEG/WebP object export, canceled save, path restriction, clipboard.')
   } finally { await application.close() }
 })().catch(error => { console.error(error); process.exitCode = 1 })
