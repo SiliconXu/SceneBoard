@@ -21,7 +21,30 @@ npm run preview
 
 浏览器验收测试：`npm run test:e2e`。Windows 默认使用已安装的 Chrome；其他平台先运行 `npx playwright install chromium`。可通过 `PLAYWRIGHT_CHANNEL` 环境变量选择浏览器。
 
-## 使用
+## Windows U 盘便携版
+
+便携版复用同一套 Vue 编辑器，不需要安装 Node.js 或运行开发服务器。解压发布 ZIP 到 U 盘的一个可写文件夹，双击 `SceneBoard.exe`。请复制整个文件夹，不能只复制 EXE。
+
+```text
+SceneBoard/
+  SceneBoard.exe
+  resources/、locales/、DLL 等运行文件
+  data/       设置、浏览器缓存、日志及临时文件（首次运行创建）
+  projects/   项目文件默认保存位置
+  exports/    PNG 和坐标 JSON 默认保存位置
+```
+
+应用管理的数据均位于 EXE 所在文件夹及其子文件夹，不使用系统 AppData。保存对话框允许更改文件名和子目录，但禁止保存到便携目录外。项目已嵌入全部背景及对象图片，保存后不依赖原图片路径。图层内部剪贴板仍仅在当前运行期间保留；没有新增自动保存，请在关闭程序或拔出 U 盘前保存项目并退出。系统剪贴板是电脑提供的临时功能，不属于项目存储。
+
+开发者构建 Windows x64 便携包：
+
+```sh
+npm run desktop:build
+```
+
+输出到 `release/`。桌面本地运行：`npm run desktop:dev`；验证：`npm run test:desktop`。开发运行数据放在项目的 `.portable-dev/`，与 `release/` 一样不会提交到 Git。
+
+## 编辑操作
 
 1. 加载 PNG、JPEG 或 WebP 背景。
 2. 添加一张或多张角色 / 物品图片，单击右侧图层卡片里的名称即可修改，Enter 或失去焦点保存，Esc 取消。名称显示在对象正下方，留空则隐藏。第一张图片居中，后续图片依次向右下偏移 20 个原图像素；批量和分次添加都采用该规则，位置限制在背景内。

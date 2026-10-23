@@ -4,3 +4,6 @@ test-results/
 playwright-report/
 *.local
 docs/superpowers/
+release/
+.portable-dev/
+assets/

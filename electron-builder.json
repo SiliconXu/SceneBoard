@@ -1,0 +1,9 @@
+{
+  "appId": "com.vulcoding.sceneboard",
+  "productName": "SceneBoard",
+  "directories": { "output": "release" },
+  "files": ["dist/**/*", "electron/**/*.cjs", "src/logo.png", "package.json"],
+  "asar": true,
+  "win": { "target": [{ "target": "zip", "arch": ["x64"] }], "signAndEditExecutable": false },
+  "artifactName": "SceneBoard-${version}-windows-${arch}-portable.${ext}"
+}

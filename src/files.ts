@@ -19,13 +19,15 @@ export async function readImage(file: File) {
   return { name: file.name, src, width: image.naturalWidth, height: image.naturalHeight }
 }
 
-export function download(blob: Blob, filename: string) {
+export async function download(blob: Blob, filename: string): Promise<boolean> {
+  if (window.sceneBoardDesktop) return window.sceneBoardDesktop.save(filename, new Uint8Array(await blob.arrayBuffer()))
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url
   anchor.download = filename
   anchor.click()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
+  return true
 }
 
 export const downloadJson = (data: unknown, filename: string) => download(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), filename)

@@ -390,28 +390,36 @@ const layerStyle = (layer: Layer, index: number) => ({ left: `${layer.x * scale.
 const errorText = (error: unknown) => error instanceof Error ? error.message : '操作失败，请重试。'
 const fileStem = () => (background.value?.name.replace(/\.[^.]+$/, '') || 'frame')
 
-function exportCoordinates() {
+async function exportCoordinates() {
   if (!background.value) return
-  downloadJson(coordinateData(background.value, layers.value), `${fileStem()}-coordinates.json`)
   showExport.value = false
-  notify('坐标 JSON 已导出')
+  try {
+    if (await downloadJson(coordinateData(background.value, layers.value), `${fileStem()}-coordinates.json`)) notify('坐标 JSON 已导出')
+  } catch (error) { notify(errorText(error), true) }
 }
 
 async function copyCoordinates() {
   if (!background.value) return
   try {
-    await navigator.clipboard.writeText(JSON.stringify(coordinateData(background.value, layers.value), null, 2))
+    const text = JSON.stringify(coordinateData(background.value, layers.value), null, 2)
+    if (window.sceneBoardDesktop) await window.sceneBoardDesktop.copyText(text)
+    else await navigator.clipboard.writeText(text)
     notify('坐标 JSON 已复制')
   } catch { notify('复制失败，请使用“导出坐标 JSON”保存。', true) }
   showExport.value = false
 }
 
-function saveProject() {
-  if (!background.value) return
+async function saveProject() {
+  if (!background.value || busy.value) return
   const project: Project = { version: 2, background: background.value, layers: layers.value }
-  downloadJson(project, `${fileStem()}.frame.json`)
-  dirty.value = false
-  notify('项目已保存，包含所有图片和精确坐标')
+  busy.value = true
+  try {
+    if (await downloadJson(project, `${fileStem()}.frame.json`)) {
+      dirty.value = false
+      notify('项目已保存，包含所有图片和精确坐标')
+    }
+  } catch (error) { notify(errorText(error), true) }
+  finally { busy.value = false }
 }
 
 async function openProject(event: Event) {
@@ -453,8 +461,7 @@ async function exportPng() {
     const bg = background.value
     const canvas = await renderComposition(bg, layers.value, { coordinates: exportCoordinatesOption.value, names: exportNamesOption.value })
     const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('PNG 导出失败，图片尺寸可能过大。')), 'image/png'))
-    download(blob, `${fileStem()}-composition.png`)
-    notify('合成 PNG 已导出')
+    if (await download(blob, `${fileStem()}-composition.png`)) notify('合成 PNG 已导出')
   } catch (error) { notify(errorText(error), true) }
   finally { busy.value = false }
 }
