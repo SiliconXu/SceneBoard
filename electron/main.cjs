@@ -31,6 +31,18 @@ function assertLocal(event) {
 }
 
 app.whenReady().then(() => {
+  ipcMain.handle('portable:pygame-project', async (event, name, files) => {
+    assertLocal(event)
+    const { validateFiles, writeProject } = require('./project-export.cjs')
+    validateFiles(files)
+    if (typeof name !== 'string' || name.length > 100 || !/^[^<>:"/\\|?*\x00-\x1f]+$/.test(name)) throw new Error('项目文件夹名称无效。')
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: '导出 Pygame Zero 项目文件夹', defaultPath: path.join(root, 'exports', name),
+      buttonLabel: '创建项目文件夹', properties: ['createDirectory', 'dontAddToRecent'],
+    })
+    if (result.canceled || !result.filePath) return null
+    return writeProject(root, result.filePath, files)
+  })
   ipcMain.handle('portable:save', async (event, filename, bytes) => {
     assertLocal(event)
     if (typeof filename !== 'string' || filename.length > 250 || !(bytes instanceof Uint8Array)) throw new Error('保存文件的数据无效。')

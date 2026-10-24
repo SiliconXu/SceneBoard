@@ -1,14 +1,9 @@
 import type { Layer } from './project'
-import { clamp, type Size } from './geometry'
+import { type Size } from './geometry'
+import { pasteSelection } from './transforms'
 
 export function pastedLayer(source: Layer, bounds: Size, id: string, offset: number): Layer {
-  const scale = Math.min(1, bounds.width / source.width, bounds.height / source.height)
-  const width = source.width * scale, height = source.height * scale
-  return {
-    ...source, id, width, height,
-    x: clamp(source.x + offset, 0, bounds.width - width),
-    y: clamp(source.y + offset, 0, bounds.height - height),
-  }
+  return { ...pasteSelection([source], bounds, offset)[0]!, id }
 }
 
 // The sidebar is top-to-bottom; persisted layers are bottom-to-top.

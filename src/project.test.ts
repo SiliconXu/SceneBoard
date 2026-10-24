@@ -4,6 +4,20 @@ import { coordinateData, parseProject, type Project } from './project'
 const project: Project = { version: 1, background: { name: 'bg.png', src: 'data:image/png;base64,AAAA', width: 800, height: 600 }, layers: [{ id: 'one', name: 'sprite.png', src: 'data:image/png;base64,BBBB', x: 10.25, y: 20.6, width: 100.9, height: 50.45 }] }
 
 describe('project persistence and coordinate export', () => {
+  it('round-trips v3 color backgrounds and includes color in coordinate data', () => {
+    const data: Project = { ...project, version: 3, background: { kind: 'color', name: '纯色背景', width: 800, height: 600, color: '#123abc' } }
+    expect(parseProject(JSON.stringify(data))).toEqual(data)
+    expect(coordinateData(data.background, data.layers).background).toEqual(data.background)
+    for (const invalid of [{ color: 'red' }, { width: 0 }, { height: 1.5 }, { width: 32768 }, { width: 10000, height: 10000 }, { kind: 'other' }]) {
+      expect(() => parseProject(JSON.stringify({ ...data, background: { ...data.background, ...invalid } }))).toThrow()
+    }
+    expect(() => parseProject(JSON.stringify({ ...data, version: 2 }))).toThrow()
+  })
+  it('requires an explicit image kind in v3 and accepts v3 shapes', () => {
+    const data: Project = { ...project, version: 3, background: { ...project.background, kind: 'image' } as Project['background'], layers: [{ kind: 'rectangle', id: 'shape', name: '', color: '#ffffff', x: 0, y: 0, width: 10, height: 10 }] }
+    expect(parseProject(JSON.stringify(data))).toEqual(data)
+    expect(() => parseProject(JSON.stringify({ ...data, background: project.background }))).toThrow()
+  })
   it('round-trips all image data, precise geometry, and layer order', () => {
     const original = { ...project, layers: [...project.layers, { ...project.layers[0]!, id: 'two' }] }
     expect(parseProject(JSON.stringify(original))).toEqual(original)
@@ -12,7 +26,7 @@ describe('project persistence and coordinate export', () => {
     expect(coordinateData(project.background, project.layers).layers[0]).toMatchObject({ id: 'one', name: 'sprite.png', kind: 'image', topLeft: { x: 10, y: 21 }, bottomRight: { x: 111, y: 71 }, center: { x: 61, y: 46 }, anchors: { midtop: { x: 61, y: 21 }, midright: { x: 111, y: 46 } } })
   })
   it.each([
-    { ...project, version: 3 },
+    { ...project, version: 4 },
     { ...project, background: { ...project.background, width: 0 } },
     { ...project, layers: [{ ...project.layers[0], x: -1 }] },
     { ...project, layers: [{ ...project.layers[0], width: 1000 }] },

@@ -1,5 +1,6 @@
 import { decodeImage } from './files'
 import type { ImageLayer } from './project'
+import { assertCanvasSize } from './background'
 
 export function imageExportInfo(layer: ImageLayer) {
   const format = /^data:image\/(png|jpeg|webp);base64,/.exec(layer.src)?.[1]
@@ -11,10 +12,11 @@ export function imageExportInfo(layer: ImageLayer) {
   return { width, height, mime: `image/${format}`, label: format.toUpperCase(), filename: `${stem}-${width}x${height}.${extension}` }
 }
 
-export async function renderImageExport(layer: ImageLayer) {
+export async function renderImageExport(layer: ImageLayer, outputMime?: 'image/png') {
   const info = imageExportInfo(layer)
+  if (outputMime) { info.mime = outputMime; info.label = 'PNG'; info.filename = info.filename.replace(/\.[^.]+$/, '.png') }
   // Avoid allocating a canvas that is likely to exhaust the renderer's memory.
-  if (!Number.isFinite(info.width) || !Number.isFinite(info.height) || info.width > 32767 || info.height > 32767 || info.width * info.height > 64_000_000) throw new Error('导出尺寸过大，请先缩小对象。')
+  assertCanvasSize(info)
   const image = await decodeImage(layer.src)
   const canvas = document.createElement('canvas')
   canvas.width = info.width; canvas.height = info.height

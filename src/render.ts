@@ -1,5 +1,5 @@
 import type { Size } from './geometry'
-import { isImageLayer, type Layer, type ShapeLayer } from './project'
+import { isImageLayer, type Background, type Layer, type ShapeLayer } from './project'
 import { decodeImage } from './files'
 
 export interface AnnotationOptions { coordinates: boolean; names: boolean }
@@ -56,13 +56,16 @@ export function drawAnnotations(context: CanvasRenderingContext2D, layer: Layer,
   if (options.names) label(context, layer.name, layer.x + layer.width / 2, layer.y + layer.height, 'center', bounds, false)
 }
 
-export async function renderComposition(background: { src: string } & Size, layers: Layer[], options: AnnotationOptions): Promise<HTMLCanvasElement> {
+export async function renderComposition(background: Background, layers: Layer[], options: AnnotationOptions): Promise<HTMLCanvasElement> {
   const canvas = document.createElement('canvas')
   canvas.width = background.width; canvas.height = background.height
   const context = canvas.getContext('2d')
   if (!context || canvas.width !== background.width || canvas.height !== background.height) throw new Error('无法创建导出画布，图片尺寸可能过大。')
   const images = await Promise.all(layers.map(layer => isImageLayer(layer) ? decodeImage(layer.src) : Promise.resolve(null)))
-  context.drawImage(await decodeImage(background.src), 0, 0)
+  if (background.kind === 'color') {
+    context.fillStyle = background.color
+    context.fillRect(0, 0, background.width, background.height)
+  } else context.drawImage(await decodeImage(background.src), 0, 0)
   // All names sit behind all objects, so a caption never hides another character.
   if (options.names) layers.forEach(layer => drawAnnotations(context, layer, background, { coordinates: false, names: true }))
   layers.forEach((layer, index) => {

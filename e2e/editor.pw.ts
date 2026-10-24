@@ -83,7 +83,7 @@ test('load, move, resize, preserve coordinates, restore, export, and recover fro
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: '先放一张背景图片' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '先选择一种背景' })).toBeVisible()
   await page.screenshot({ path: 'test-results/frame-empty.png', fullPage: true })
   await expect(page.getByRole('button', { name: '添加图片', exact: false })).toBeDisabled()
   const bg = await imageFile(page, 'background.png', 800, 600, '#e0e0e0')
@@ -182,7 +182,7 @@ test('names, outside corner labels, shape drawing, Ctrl, and optional exported a
   await expect(page.getByTestId('top-left-label')).toHaveCount(0)
   await expect(page.getByTestId('bottom-right-label')).toHaveCount(0)
   await expect(page.getByTestId('center-label')).toHaveText('(400, 300)')
-  await expect(page.getByTestId('anchor-grid').locator('small')).toHaveCount(9)
+  await expect(page.locator('[data-testid="layer-card"][aria-pressed="true"]').getByTestId('anchor-grid').locator('small')).toHaveCount(9)
   const stage = (await page.getByTestId('stage').boundingBox())!
   const scale = stage.width / 800
   const point = (x: number, y: number) => ({ x: stage.x + x * scale, y: stage.y + y * scale })
@@ -221,7 +221,7 @@ test('names, outside corner labels, shape drawing, Ctrl, and optional exported a
   await expect(page.getByTestId('layer-card').first()).toContainText('100 × 110 px')
   const saved = await downloadBytes(page, () => page.getByRole('button', { name: '保存项目', exact: false }).click())
   const project = JSON.parse(saved.toString())
-  expect(project.version).toBe(2)
+  expect(project.version).toBe(3)
   expect(project.layers[0].name).toBe('勇者')
   expect(project.layers[1].kind).toBe('rectangle')
   expect(project.layers[2].kind).toBe('ellipse')
@@ -268,8 +268,8 @@ test('nine anchors, color controls, translucent fills, shortcuts, and persistenc
   await page.goto('/')
   await page.getByTestId('background-input').setInputFiles(await imageFile(page, 'bg.png', 800, 600, '#e0e0e0'))
   await page.getByTestId('layer-input').setInputFiles(await imageFile(page, 'actor.png', 200, 100, '#f00'))
-  await expect(page.getByTestId('anchor-grid').locator('small')).toHaveText(['topleft', 'midtop', 'topright', 'midleft', 'center', 'midright', 'bottomleft', 'midbottom', 'bottomright'])
-  await expect(page.getByTestId('anchor-grid').locator('b')).toHaveText(['(300, 250)', '(400, 250)', '(500, 250)', '(300, 300)', '(400, 300)', '(500, 300)', '(300, 350)', '(400, 350)', '(500, 350)'])
+  await expect(page.locator('[data-testid="layer-card"][aria-pressed="true"]').getByTestId('anchor-grid').locator('small')).toHaveText(['topleft', 'midtop', 'topright', 'midleft', 'center', 'midright', 'bottomleft', 'midbottom', 'bottomright'])
+  await expect(page.locator('[data-testid="layer-card"][aria-pressed="true"]').getByTestId('anchor-grid').locator('b')).toHaveText(['(300, 250)', '(400, 250)', '(500, 250)', '(300, 300)', '(400, 300)', '(500, 300)', '(300, 350)', '(400, 350)', '(500, 350)'])
   const labelStyles = await page.evaluate(() => ({ coordinate: getComputedStyle(document.querySelector('.selection-tag')!).backgroundColor, name: getComputedStyle(document.querySelector('.object-name')!).backgroundColor, coordinateZ: +getComputedStyle(document.querySelector('.coordinate-overlay')!).zIndex, nameZ: +getComputedStyle(document.querySelector('.name-overlay')!).zIndex }))
   expect(labelStyles.coordinate).toContain('0.68')
   expect(labelStyles.name).toContain('0.65')
@@ -449,7 +449,7 @@ test('inline name commit, cancel, blank labels, and numbers follow reordered car
   await page.getByTestId('background-input').setInputFiles(await imageFile(page, 'bg.png', 800, 600, '#e0e0e0'))
   const file = await imageFile(page, 'a.png', 100, 100, '#f00')
   await page.getByTestId('layer-input').setInputFiles([file, { ...file, name: 'b.png' }])
-  await expect(page.getByRole('textbox')).toHaveCount(0)
+  await expect(page.getByRole('textbox', { name: '角色 / 物品名称' })).toHaveCount(0)
   await expect(page.getByTestId('layer-number')).toHaveText(['1', '2'])
   await page.getByTestId('layer-card').last().getByTestId('edit-name').click()
   const input = page.getByRole('textbox', { name: '角色 / 物品名称' })
@@ -566,6 +566,8 @@ test('drag distance guides, overlap alignment, arrow nudging and input protectio
 })
 
 test('shape-image distance, threshold, selected shape names, and keyboard guide updates', async ({ page }) => {
+  // Keep these original-pixel gaps on both sides of the 30-screen-pixel threshold.
+  await page.setViewportSize({ width: 1280, height: 1020 })
   await page.goto('/')
   const bg = await imageFile(page, 'bg.png', 800, 600, '#e0e0e0')
   const sprite = await imageFile(page, 'actor.png', 100, 100, '#f00')

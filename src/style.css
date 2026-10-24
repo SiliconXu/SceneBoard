@@ -73,3 +73,36 @@
 .object-export-menu small,.export-menu .object-export-action small{display:block;float:none;margin-top:6px;color:#8a93a3;font-size:10px;font-weight:400;}
 .export-menu .object-export-action{border-bottom:1px solid #edf0f5;margin-bottom:5px;}
 .export-menu button:disabled{opacity:.5;cursor:default;background:transparent;}
+.background-wrap{position:relative;}
+.background-wrap .export-menu{width:170px;}
+.solid-start{margin-top:10px;}
+.modal.background-dialog{width:min(460px,calc(100vw - 32px));}
+.dimension-inputs{display:flex;gap:16px;margin:20px 0;}
+.dimension-inputs label{flex:1;min-width:0;}
+.dimension-inputs input,.project-name input,.color-inputs input[type=text]{display:block;width:100%;margin-top:7px;border:1px solid #d5ddea;border-radius:6px;padding:9px;color:#263248;background:#fff;}
+.dimension-inputs input:disabled{background:#f3f5f8;}
+.color-inputs{display:flex;align-items:center;gap:12px;}
+.color-inputs input[type=color]{width:42px;height:38px;border:0;padding:0;background:none;}
+.color-inputs input[type=text]{width:120px;margin:0;font-family:Consolas,monospace;}
+.modal.pygame-dialog{width:min(740px,calc(100vw - 32px));max-height:calc(100dvh - 40px);overflow-y:auto;}
+.project-name{display:block;margin:16px 0;}
+.pygame-dialog p{margin:10px 0;line-height:1.65;}
+.code-preview{max-height:36vh;overflow:auto;margin:12px 0;padding:16px;background:#f2f5fb;border:1px solid #dfe5ef;border-radius:8px;color:#263248;font:13px/1.65 Consolas,monospace;white-space:pre;tab-size:4;}
+.name-issues{margin-top:16px;padding:14px;border:1px solid #edc7c7;background:#fff6f6;border-radius:8px;}
+.name-issues ul{padding-left:20px;max-height:30vh;overflow:auto;}
+.name-issues li{margin:10px 0;}
+.name-issues li span{display:block;font-size:12px;margin-top:4px;}
+.name-issues small{line-height:1.6;}
+.form-error{color:#b72e3e!important;}
+.validation-ok{display:block;margin-top:16px;color:#24774d;font-size:12px;}
+.background-info .text-button{display:block;margin-top:8px;}
+/* A stable dock below the canvas keeps selection changes from resizing the workspace. */
+.properties-dock{height:84px;flex-shrink:0;margin-top:10px;min-width:0}.selection-properties{height:100%;border:1px solid #e4e8f0;border-radius:8px;padding:10px 12px;background:#fff;color:#62708a;font-size:11px;display:grid;grid-template-columns:120px 112px minmax(0,1fr);align-content:center;align-items:center;gap:8px 12px;overflow:auto}.selection-empty{height:100%;display:flex;align-items:center;justify-content:center;color:#929db1;font-size:11px;text-align:center;padding:8px}
+.properties-heading{display:flex;align-items:center;justify-content:space-between;gap:6px;color:#46536b}.properties-heading strong{font-size:12px;font-weight:600}.properties-heading>span{color:#929db1;font:10px Consolas,monospace}
+.anchor-choice{white-space:nowrap;display:flex;justify-content:space-between;align-items:center;gap:6px}.anchor-choice select{font-size:11px;color:#52627b;border:1px solid #dce2ed;border-radius:5px;background:white;padding:3px 7px;max-width:130px}
+.property-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px 10px}.property-fields label{display:flex;align-items:center;gap:6px;min-width:0}.property-fields input{min-width:0;width:100%;height:28px;border:1px solid #dce2ed;border-radius:5px;padding:4px 6px;color:#46536b;background:white;font:11px Consolas,monospace}.property-fields input:focus{outline:2px solid #9daff8;outline-offset:1px}.property-fields input[readonly]{background:#f0f2f7;color:#8792a4}
+.ratio-choice{grid-column:3;display:flex;align-items:center;gap:5px;font-size:10px}.ratio-choice input{margin:0;accent-color:#536bdd}.property-error{grid-column:1/-1;color:#b55c5c;line-height:1.5;margin-top:8px;font-size:10px}
+.anchor-details{margin-top:9px;border-top:1px solid #e4e8f0;padding-top:8px}.anchor-details summary{cursor:pointer;font-size:10px;color:#687aab}.anchor-details .anchor-grid{margin-top:8px;padding-top:0;border-top:0}.anchor-details .anchor-grid b{font-size:9px}
+.arrangement-controls{grid-column:1/-1;display:flex;align-items:center;gap:12px}.arrangement-controls .alignment-buttons{width:230px}.arrangement-controls .distribution-buttons{width:220px;margin-top:0}.alignment-buttons{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px}.arrangement-controls button{border:1px solid #dce2ed;border-radius:5px;background:white;color:#53628a;height:28px;padding:2px;font-size:11px}.arrangement-controls button:hover:not(:disabled){background:#eef1ff;border-color:#a9b8ed}.distribution-buttons{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}.distribution-buttons button{width:100%;font-size:10px}
+.group-selection,.marquee-selection{position:absolute;pointer-events:none;box-sizing:border-box}.group-selection{outline:1px dashed #536bdd}.marquee-selection{border:1px solid #536bdd;background:#536bdd1a}.layer-card .layer-coordinates{gap:4px;margin-top:7px;padding-top:6px}.layer-card{padding:10px}
+@media(max-width:600px){.properties-dock{height:155px}.selection-properties{grid-template-columns:1fr 1fr;gap:8px}.property-fields{grid-column:1/-1}.ratio-choice{grid-column:1/-1}.arrangement-controls{flex-wrap:wrap;gap:6px}.arrangement-controls .alignment-buttons,.arrangement-controls .distribution-buttons{width:100%}}

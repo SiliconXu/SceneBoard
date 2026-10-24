@@ -9,13 +9,76 @@ import ShapeView from './ShapeView.vue'
 import EditableName from './EditableName.vue'
 import DistanceGuides from './DistanceGuides.vue'
 import { proximityGuides, type Guides } from './guides'
-import { pastedLayer, reorderLayers } from './layers'
+import { reorderLayers } from './layers'
+import SelectionProperties from './SelectionProperties.vue'
+import { alignSelection, containedBy, distributeSelection, editRect, moveSelection, pasteSelection, positionAt, selectionBounds, type Alignment, type Axis, type PositionAnchor, type RectField } from './transforms'
 import logoUrl from './logo.png'
+import ColorBackgroundDialog from './ColorBackgroundDialog.vue'
+import PygameExportDialog from './PygameExportDialog.vue'
+import type { ColorBackground } from './project'
 
 const background = ref<Background | null>(null)
+const showBackgroundMenu = ref(false)
+const colorDialog = ref<'create' | 'edit' | null>(null)
+const exportSnapshot = ref<Project | null>(null)
+const currentColorBackground = computed(() => colorDialog.value === 'edit' && background.value?.kind === 'color' ? background.value : undefined)
+const modalOpen = computed(() => !!colorDialog.value || !!exportSnapshot.value || confirmReplace.value)
 const layers = ref<Layer[]>([])
-const selectedId = ref<string | null>(null)
-const selected = computed(() => layers.value.find(layer => layer.id === selectedId.value))
+const selectedIds = ref<string[]>([])
+const activeId = ref<string | null>(null)
+// Assigning a single ID also replaces the selection (open/import/rename/export).
+const selectedId = computed({ get: () => activeId.value, set: (id: string | null) => setSelection(id ? [id] : [], id) })
+const selectedLayers = computed(() => layers.value.filter(layer => selectedIds.value.includes(layer.id)))
+const selected = computed(() => selectedLayers.value.length === 1 ? selectedLayers.value[0] : undefined)
+const selectionBox = computed(() => selectionBounds(selectedLayers.value))
+function setSelection(ids: string[], active: string | null = ids.at(-1) ?? null) {
+  selectedIds.value = ids
+  activeId.value = active && ids.includes(active) ? active : ids.at(-1) ?? null
+  guides.value = null; guideMode.value = null
+}
+function isSelected(id: string) { return selectedIds.value.includes(id) }
+function additive(event?: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) { return !!event && (event.shiftKey || event.ctrlKey || event.metaKey) }
+function toggleSelection(id: string) {
+  setSelection(isSelected(id) ? selectedIds.value.filter(item => item !== id) : [...selectedIds.value, id], id)
+}
+function applyRects(rects: Layer[]) {
+  let changed = false
+  for (const rect of rects) {
+    const layer = layers.value.find(item => item.id === rect.id)
+    if (layer && (layer.x !== rect.x || layer.y !== rect.y || layer.width !== rect.width || layer.height !== rect.height)) {
+      Object.assign(layer, rect); changed = true
+    }
+  }
+  if (changed) dirty.value = true
+}
+function updateSelectionGuides() {
+  const box = selectionBox.value
+  guides.value = box ? proximityGuides({ ...box, id: '__selection__' }, layers.value.filter(layer => !isSelected(layer.id)), scale.value) : null
+}
+function editSelection(field: RectField, value: number, anchor: PositionAnchor, proportional: boolean) {
+  if (!background.value || !selectionBox.value || busy.value) return
+  endGesture()
+  try {
+    if (selected.value) {
+      const result = editRect(selected.value, field, value, background.value, anchor, proportional)
+      applyRects([{ ...selected.value, ...result }])
+      const actual = field === 'x' || field === 'y' ? positionAt(result, anchor)[field] : result[field]
+      if (Math.abs(actual - value) > 1e-7) notify('已按画布边界限制，显示实际数值')
+    } else if (field === 'x' || field === 'y') {
+      const point = positionAt(selectionBox.value, anchor)
+      const delta = { x: field === 'x' ? value - point.x : 0, y: field === 'y' ? value - point.y : 0 }
+      applyRects(moveSelection(selectedLayers.value, delta, background.value))
+      if (Math.abs(positionAt(selectionBox.value, anchor)[field] - value) > 1e-7) notify('已按画布边界限制，显示实际数值')
+    }
+  } catch (error) { notify(errorText(error), true) }
+}
+function arrangeSelection(alignment: Alignment) { if (!busy.value) { endGesture(); applyRects(alignSelection(selectedLayers.value, alignment)) } }
+function distribute(axis: Axis) {
+  if (busy.value) return
+  endGesture()
+  const result = distributeSelection(selectedLayers.value, axis)
+  if (result) applyRects(result)
+}
 const bgInput = ref<HTMLInputElement>()
 const layerInput = ref<HTMLInputElement>()
 const projectInput = ref<HTMLInputElement>()
@@ -52,7 +115,7 @@ const defaultBorder = ref('#536bdd')
 const defaultFill = ref<string | null>(null)
 const draggedLayerId = ref<string | null>(null)
 const dropTarget = ref<{ id: string; before: boolean } | null>(null)
-const layerClipboard = ref<{ layer: Layer; cut: boolean; pasteCount: number } | null>(null)
+const layerClipboard = ref<{ layers: Layer[]; cut: boolean; pasteCount: number } | null>(null)
 const editingLayerId = ref<string | null>(null)
 const guides = ref<Guides | null>(null)
 const guideMode = ref<'drag' | 'keyboard' | null>(null)
@@ -71,7 +134,7 @@ let observer: ResizeObserver | undefined
 let toastTimer: ReturnType<typeof setTimeout> | undefined
 const corners: Corner[] = ['nw', 'ne', 'sw', 'se']
 const cornerLabels = { nw: '左上角', ne: '右上角', sw: '左下角', se: '右下角' }
-const stageStyle = computed(() => background.value ? { width: `${background.value.width * scale.value}px`, height: `${background.value.height * scale.value}px`, transform: `translate(${pan.value.x}px, ${pan.value.y}px)` } : {})
+const stageStyle = computed(() => background.value ? { width: `${background.value.width * scale.value}px`, height: `${background.value.height * scale.value}px`, transform: `translate(${pan.value.x}px, ${pan.value.y}px)`, backgroundColor: background.value.kind === 'color' ? background.value.color : undefined, backgroundImage: background.value.kind === 'color' ? 'none' : undefined } : {})
 
 function notify(text: string, error = false) {
   message.value = text
@@ -97,7 +160,7 @@ function constrainPan() {
 function zoomMap(event: WheelEvent) {
   if (!background.value || !workspace.value || busy.value) return
   event.preventDefault()
-  if (gesture || drawing || panGesture) return
+  if (gesture || drawing || panGesture || marquee) return
   const box = workspace.value.getBoundingClientRect()
   const anchor = { x: event.clientX - box.left - workspace.value.clientLeft - workspace.value.clientWidth / 2, y: event.clientY - box.top - workspace.value.clientTop - workspace.value.clientHeight / 2 }
   const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? workspace.value.clientHeight : 1)
@@ -113,7 +176,7 @@ function zoomMap(event: WheelEvent) {
 function beginPan(event: PointerEvent) {
   if (event.button !== 2 || !background.value || !workspace.value) return
   event.preventDefault(); event.stopPropagation()
-  if (busy.value || gesture || drawing) return
+  if (busy.value || gesture || drawing || marquee) return
   const canPan = background.value.width * scale.value > workspace.value.clientWidth || background.value.height * scale.value > workspace.value.clientHeight
   if (!canPan) return
   panGesture = { pointerId: event.pointerId, start: { x: event.clientX, y: event.clientY }, origin: { ...pan.value } }
@@ -139,6 +202,7 @@ function endPan(event?: PointerEvent) {
 async function applyBackground(bg: Background) {
   cancelDrawing()
   endGesture()
+  endMarquee()
   tool.value = 'select'
   background.value = bg
   addedImageCount = 0
@@ -150,6 +214,7 @@ async function applyBackground(bg: Background) {
 }
 
 async function loadBackground(event: Event) {
+  showBackgroundMenu.value = false
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
@@ -166,6 +231,33 @@ async function loadBackground(event: Event) {
 }
 
 function cancelReplace() { pendingBackground = null; confirmReplace.value = false }
+function openColorDialog(mode: 'create' | 'edit') {
+  showBackgroundMenu.value = false
+  cancelDrawing(); endGesture(); endMarquee(); endPan(); closeObjectMenu()
+  colorDialog.value = mode
+}
+async function applyColorBackground(bg: ColorBackground) {
+  if (colorDialog.value === 'edit' && background.value?.kind === 'color') {
+    if (background.value.color !== bg.color) { background.value = bg; dirty.value = true }
+  } else if (background.value) { pendingBackground = bg; confirmReplace.value = true }
+  else await applyBackground(bg)
+  colorDialog.value = null
+}
+function openPygameExport() {
+  if (!background.value || busy.value) return
+  cancelDrawing(); endGesture(); endMarquee(); endPan(); closeObjectMenu()
+  showExport.value = false
+  exportSnapshot.value = JSON.parse(JSON.stringify({ version: 3, background: background.value, layers: layers.value }))
+}
+async function locateExportIssue(id: string) {
+  exportSnapshot.value = null
+  chooseLayer(id)
+  await nextTick()
+  const card = Array.from(layerList.value?.querySelectorAll<HTMLElement>('[data-card-id]') ?? []).find(item => item.dataset.cardId === id)
+  card?.scrollIntoView({ block: 'nearest' })
+  card?.querySelector<HTMLButtonElement>('[data-testid="edit-name"]')?.click()
+}
+function pygameSaved(path: string) { exportSnapshot.value = null; notify(`Pygame Zero 项目已导出：${path}`) }
 async function replaceBackground() {
   const bg = pendingBackground
   cancelReplace()
@@ -200,17 +292,26 @@ function removeLayer(id: string) {
   if (index < 0) return
   endGesture()
   layers.value.splice(index, 1)
-  if (selectedId.value === id) selectedId.value = layers.value[Math.min(index, layers.value.length - 1)]?.id ?? null
+  if (isSelected(id)) {
+    const remaining = selectedIds.value.filter(item => item !== id)
+    const fallback = layers.value[Math.min(index, layers.value.length - 1)]?.id
+    setSelection(remaining.length ? remaining : fallback ? [fallback] : [])
+  }
   dirty.value = true
 }
-function removeSelected() { if (selectedId.value) removeLayer(selectedId.value) }
+function removeSelected() {
+  if (busy.value || !selectedLayers.value.length) return
+  endGesture()
+  layers.value = layers.value.filter(layer => !isSelected(layer.id))
+  setSelection([])
+  dirty.value = true
+}
 
 function copyLayer(cut = false) {
-  if (!selected.value || busy.value) return
+  if (!selectedLayers.value.length || busy.value) return
   endGesture()
-  const snapshot = { ...selected.value }
-  layerClipboard.value = { layer: snapshot, cut, pasteCount: 0 }
-  if (cut) removeLayer(snapshot.id)
+  layerClipboard.value = { layers: selectedLayers.value.map(layer => ({ ...layer })), cut, pasteCount: 0 }
+  if (cut) removeSelected()
   notify(cut ? '图层已剪切，可粘贴到当前项目' : '图层已复制')
 }
 
@@ -218,10 +319,10 @@ function pasteLayer() {
   if (!layerClipboard.value || !background.value || busy.value) return
   const clipboard = layerClipboard.value
   const offset = 20 * (clipboard.pasteCount + (clipboard.cut ? 0 : 1))
-  const layer = pastedLayer(clipboard.layer, background.value, crypto.randomUUID(), offset)
+  const additions = pasteSelection(clipboard.layers, background.value, offset).map(layer => ({ ...layer, id: crypto.randomUUID() }))
   selectTool('select'); endLayerDrag()
-  layers.value.push(layer)
-  selectedId.value = layer.id
+  layers.value.push(...additions)
+  setSelection(additions.map(layer => layer.id))
   clipboard.pasteCount++
   dirty.value = true
   notify('图层已粘贴')
@@ -261,10 +362,12 @@ function setNameEditing(id: string, active: boolean) {
   else if (editingLayerId.value === id) editingLayerId.value = null
 }
 
-interface Gesture { id: string; pointerId: number; target: HTMLElement; start: Point; rect: Rect; corner?: Corner; scale: number; origin: Point }
+interface Gesture { id: string; pointerId: number; target: HTMLElement; start: Point; rect: Rect; rects: Layer[]; corner?: Corner; scale: number; origin: Point; collapse: boolean; moved: boolean }
 let gesture: Gesture | null = null
-function selectCanvasLayer(id: string) {
-  selectedId.value = id
+function selectCanvasLayer(id: string, event?: KeyboardEvent) {
+  if (busy.value) return
+  if (additive(event)) toggleSelection(id)
+  else selectedId.value = id
   void revealLayerCard(id)
 }
 
@@ -284,17 +387,26 @@ async function revealLayerCard(id: string) {
 function beginGesture(event: PointerEvent, layer: Layer, corner?: Corner) {
   if (tool.value !== 'select') { beginDrawing(event); return }
   if (busy.value || event.button !== 0 || !stage.value || gesture) return
+  commitFocusedInput()
   guides.value = null
   guideMode.value = null
   event.preventDefault()
-  selectCanvasLayer(layer.id)
+  if (additive(event) && !corner) {
+    toggleSelection(layer.id)
+    void revealLayerCard(layer.id)
+    return
+  }
+  const collapse = isSelected(layer.id) && selectedLayers.value.length > 1 && !corner
+  if (!isSelected(layer.id) || corner) selectedId.value = layer.id
+  else activeId.value = layer.id
+  void revealLayerCard(layer.id)
   const target = event.currentTarget as HTMLElement
   const bounds = stage.value.getBoundingClientRect()
   const origin = { x: bounds.left, y: bounds.top }
   const point = screenToImage({ x: event.clientX, y: event.clientY }, origin, scale.value)
   const handleCorner = corner ? { x: corner.endsWith('e') ? layer.x + layer.width : layer.x, y: corner.startsWith('s') ? layer.y + layer.height : layer.y } : point
   // Account for clicking slightly off the exact corner, preventing a jump at drag start.
-  gesture = { id: layer.id, pointerId: event.pointerId, target, start: { x: point.x - handleCorner.x, y: point.y - handleCorner.y }, rect: { x: layer.x, y: layer.y, width: layer.width, height: layer.height }, corner, scale: scale.value, origin }
+  gesture = { rects: selectedLayers.value.map(item => ({ ...item })), collapse, moved: false, id: layer.id, pointerId: event.pointerId, target, start: { x: point.x - handleCorner.x, y: point.y - handleCorner.y }, rect: { x: layer.x, y: layer.y, width: layer.width, height: layer.height }, corner, scale: scale.value, origin }
   if (!corner) gesture.start = point
   target.setPointerCapture(event.pointerId)
 }
@@ -304,13 +416,26 @@ function updateGesture(event: PointerEvent) {
   const layer = layers.value.find(item => item.id === gesture!.id)
   if (!layer) return
   const point = screenToImage({ x: event.clientX, y: event.clientY }, gesture.origin, gesture.scale)
-  const result = gesture.corner
-    ? (!isImageLayer(layer) && event.ctrlKey ? resizeFreeRect : resizeRect)(gesture.rect, gesture.corner, { x: point.x - gesture.start.x, y: point.y - gesture.start.y }, background.value)
-    : moveRect(gesture.rect, { x: point.x - gesture.start.x, y: point.y - gesture.start.y }, background.value)
-  Object.assign(layer, result)
-  guides.value = !gesture.corner ? proximityGuides(layer, layers.value, scale.value) : null
+  const distance = Math.hypot(point.x - gesture.start.x, point.y - gesture.start.y) * gesture.scale
+  if (!gesture.corner && !gesture.moved && distance < 3) return
+  gesture.moved = true
+  if (gesture.corner) {
+    const result = (!isImageLayer(layer) && event.ctrlKey ? resizeFreeRect : resizeRect)(gesture.rect, gesture.corner, { x: point.x - gesture.start.x, y: point.y - gesture.start.y }, background.value)
+    applyRects([{ ...layer, ...result }])
+    guides.value = null
+  } else {
+    applyRects(moveSelection(gesture.rects, { x: point.x - gesture.start.x, y: point.y - gesture.start.y }, background.value))
+    updateSelectionGuides()
+  }
   guideMode.value = 'drag'
-  dirty.value = true
+}
+
+function finishGesture(event: PointerEvent) {
+  if (!gesture || event.pointerId !== gesture.pointerId) return
+  const collapse = gesture.collapse && !gesture.moved
+  const id = gesture.id
+  endGesture()
+  if (collapse) selectedId.value = id
 }
 
 function endGesture() {
@@ -321,18 +446,57 @@ function endGesture() {
   if (current?.target.hasPointerCapture(current.pointerId)) current.target.releasePointerCapture(current.pointerId)
 }
 
+interface Marquee { pointerId: number; target: HTMLElement; start: Point; origin: Point; scale: number; base: string[]; previous: string[]; active: string | null; moved: boolean }
+let marquee: Marquee | null = null
+const marqueeBox = ref<Rect | null>(null)
+function commitFocusedInput() {
+  const input = document.activeElement
+  if (input instanceof HTMLElement && input.closest('.selection-properties, .inline-name')) input.blur()
+}
+function beginMarquee(event: PointerEvent) {
+  if (event.button !== 0 || busy.value || !stage.value || !background.value || gesture || marquee) return
+  commitFocusedInput()
+  event.preventDefault()
+  const bounds = stage.value.getBoundingClientRect()
+  const origin = { x: bounds.left, y: bounds.top }
+  const previous = [...selectedIds.value]
+  marquee = { pointerId: event.pointerId, target: stage.value, start: screenToImage({ x: event.clientX, y: event.clientY }, origin, scale.value), origin, scale: scale.value, base: additive(event) ? previous : [], previous, active: activeId.value, moved: false }
+  stage.value.setPointerCapture(event.pointerId)
+}
+function updateMarquee(event: PointerEvent) {
+  if (!marquee || event.pointerId !== marquee.pointerId || !background.value) return
+  const point = screenToImage({ x: event.clientX, y: event.clientY }, marquee.origin, marquee.scale)
+  if (!marquee.moved && Math.hypot(point.x - marquee.start.x, point.y - marquee.start.y) * marquee.scale < 3) return
+  marquee.moved = true
+  const box = drawRect(marquee.start, point, background.value, true)
+  marqueeBox.value = box
+  setSelection([...new Set([...marquee.base, ...layers.value.filter(layer => containedBy(layer, box)).map(layer => layer.id)])])
+}
+function endMarquee(cancel = true) {
+  const current = marquee
+  if (!current) return
+  marquee = null; marqueeBox.value = null
+  if (cancel) setSelection(current.previous, current.active)
+  else if (!current.moved) setSelection(current.base)
+  if (current.target.hasPointerCapture(current.pointerId)) current.target.releasePointerCapture(current.pointerId)
+}
+function finishMarquee(event: PointerEvent) {
+  if (!marquee || event.pointerId !== marquee.pointerId) return
+  updateMarquee(event); endMarquee(false)
+}
+
 interface Drawing { pointerId: number; target: HTMLElement; start: Point; last: Point; scale: number; origin: Point }
 let drawing: Drawing | null = null
 
 function selectTool(value: typeof tool.value) {
-  cancelDrawing(); endGesture()
+  cancelDrawing(); endGesture(); endMarquee()
   tool.value = value
   if (value !== 'select') selectedId.value = null
 }
 
 function beginDrawing(event: PointerEvent) {
   if (event.button !== 0) return
-  if (tool.value === 'select') { selectedId.value = null; return }
+  if (tool.value === 'select') { beginMarquee(event); return }
   if (busy.value || event.button !== 0 || !stage.value || !background.value || drawing) return
   event.preventDefault()
   const box = stage.value.getBoundingClientRect()
@@ -394,11 +558,16 @@ function setShapeColor(property: 'color' | 'fillColor', value: string | null) {
   }
 }
 
-function chooseLayer(id: string) { selectTool('select'); selectedId.value = id }
+function chooseLayer(id: string, event?: MouseEvent | KeyboardEvent) {
+  if (busy.value) return
+  selectTool('select')
+  if (additive(event)) toggleSelection(id)
+  else selectedId.value = id
+}
 
 const round = (value: number) => Math.round(value)
 const formatPoint = (x: number, y: number) => `(${round(x)}, ${round(y)})`
-const layerStyle = (layer: Layer, index: number) => ({ left: `${layer.x * scale.value}px`, top: `${layer.y * scale.value}px`, width: `${layer.width * scale.value}px`, height: `${layer.height * scale.value}px`, zIndex: index + 1 })
+const layerStyle = (layer: Rect, index: number) => ({ left: `${layer.x * scale.value}px`, top: `${layer.y * scale.value}px`, width: `${layer.width * scale.value}px`, height: `${layer.height * scale.value}px`, zIndex: index + 1 })
 const errorText = (error: unknown) => error instanceof Error ? error.message : '操作失败，请重试。'
 const fileStem = () => (background.value?.name.replace(/\.[^.]+$/, '') || 'frame')
 
@@ -459,7 +628,8 @@ async function copyCoordinates() {
 
 async function saveProject() {
   if (!background.value || busy.value) return
-  const project: Project = { version: 2, background: background.value, layers: layers.value }
+  const bg: Background = background.value.kind === 'color' ? { ...background.value } : { ...background.value, kind: 'image' }
+  const project: Project = { version: 3, background: bg, layers: layers.value }
   busy.value = true
   try {
     if (await downloadJson(project, `${fileStem()}.frame.json`)) {
@@ -478,9 +648,9 @@ async function openProject(event: Event) {
   busy.value = true
   try {
     const project = parseProject(await file.text())
-    const images = await Promise.all([decodeImage(project.background.src), ...project.layers.map(layer => isImageLayer(layer) ? decodeImage(layer.src) : Promise.resolve(null))])
+    const images = await Promise.all([project.background.kind === 'color' ? Promise.resolve(null) : decodeImage(project.background.src), ...project.layers.map(layer => isImageLayer(layer) ? decodeImage(layer.src) : Promise.resolve(null))])
     const bg = images[0]!
-    if (!bg || bg.naturalWidth !== project.background.width || bg.naturalHeight !== project.background.height) throw new Error('项目背景尺寸与图片不一致。')
+    if (project.background.kind !== 'color' && (!bg || bg.naturalWidth !== project.background.width || bg.naturalHeight !== project.background.height)) throw new Error('项目背景尺寸与图片不一致。')
     project.layers.forEach((layer, index) => {
       if (!isImageLayer(layer)) return
       const image = images[index + 1]!
@@ -488,7 +658,7 @@ async function openProject(event: Event) {
       if (Math.abs(layer.width / layer.height - ratio) / ratio > 1e-6) throw new Error('项目中的图片宽高比例无效。')
     })
     if (dirty.value && background.value && !window.confirm('当前项目有未保存的更改。打开新项目会替换当前内容，是否继续？')) return
-    cancelDrawing(); endGesture(); tool.value = 'select'
+    cancelDrawing(); endGesture(); endMarquee(); endPan(); tool.value = 'select'
     background.value = project.background
     layers.value = project.layers
     addedImageCount = project.layers.filter(isImageLayer).length
@@ -515,6 +685,7 @@ async function exportPng() {
 }
 
 function onKeydown(event: KeyboardEvent) {
+  if (colorDialog.value || exportSnapshot.value) return
   if (objectMenu.value) {
     if (event.key === 'Escape' || event.key === 'Tab') {
       closeObjectMenu()
@@ -526,17 +697,19 @@ function onKeydown(event: KeyboardEvent) {
   ctrlPressed.value = event.ctrlKey
   if (event.key === 'Control') refreshDrawing()
   if (confirmReplace.value) { if (event.key === 'Escape') cancelReplace(); return }
-  if (event.key === 'Escape') { cancelDrawing(); endGesture(); endPan(); tool.value = 'select'; selectedId.value = null; showExport.value = false }
   const target = event.target as HTMLElement
   if (event.isComposing || target?.isContentEditable || target?.closest('input, textarea, select')) return
+  if (event.key === 'Escape') { cancelDrawing(); endGesture(); endMarquee(); endPan(); tool.value = 'select'; selectedId.value = null; showExport.value = false; showBackgroundMenu.value = false }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && !event.altKey && background.value && !busy.value) {
+    event.preventDefault(); selectTool('select'); setSelection(layers.value.map(layer => layer.id)); return
+  }
   const key = event.key.toLowerCase()
-  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && selected.value && background.value && !busy.value && tool.value === 'select' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && selectedLayers.value.length && background.value && !busy.value && tool.value === 'select' && !event.ctrlKey && !event.metaKey && !event.altKey) {
     event.preventDefault()
     endGesture()
     const step = event.shiftKey ? 10 : 1
-    const rect = moveRect(selected.value, { x: event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0, y: event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0 }, background.value)
-    if (rect.x !== selected.value.x || rect.y !== selected.value.y) { Object.assign(selected.value, rect); dirty.value = true }
-    guides.value = proximityGuides(selected.value, layers.value, scale.value)
+    applyRects(moveSelection(selectedLayers.value, { x: event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0, y: event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0 }, background.value))
+    updateSelectionGuides()
     guideMode.value = 'keyboard'
     return
   }
@@ -546,7 +719,7 @@ function onKeydown(event: KeyboardEvent) {
     return
   }
   if ((event.ctrlKey || event.metaKey) && !event.altKey && ['c', 'x', 'v'].includes(key)) {
-    const available = key === 'v' ? background.value && layerClipboard.value : selected.value
+    const available = key === 'v' ? background.value && layerClipboard.value : selectedLayers.value.length
     if (!available || busy.value) return
     event.preventDefault()
     if (!event.repeat) { if (key === 'v') pasteLayer(); else copyLayer(key === 'x') }
@@ -557,15 +730,18 @@ function onKeydown(event: KeyboardEvent) {
     selectTool(event.key === '1' ? 'select' : event.key === '2' ? 'rectangle' : 'ellipse')
     return
   }
-  if ((event.key === 'Delete' || event.key === 'Backspace') && selected.value) { event.preventDefault(); removeSelected() }
+  if ((event.key === 'Delete' || event.key === 'Backspace') && selectedLayers.value.length) { event.preventDefault(); removeSelected() }
 }
 function onKeyup(event: KeyboardEvent) { ctrlPressed.value = event.ctrlKey; if (event.key === 'Control') refreshDrawing() }
-function onBlur() { closeObjectMenu(); ctrlPressed.value = false; cancelDrawing(); endGesture(); endPan() }
+function onBlur() { closeObjectMenu(); ctrlPressed.value = false; cancelDrawing(); endGesture(); endMarquee(); endPan() }
 function beforeUnload(event: BeforeUnloadEvent) { if (dirty.value && background.value) { event.preventDefault(); event.returnValue = '' } }
-function closeExport(event: MouseEvent) { if (!(event.target as HTMLElement).closest('.export-wrap')) showExport.value = false }
+function closeExport(event: MouseEvent) {
+  if (!(event.target as HTMLElement).closest('.export-wrap')) showExport.value = false
+  if (!(event.target as HTMLElement).closest('.background-wrap')) showBackgroundMenu.value = false
+}
 
 onMounted(() => {
-  observer = new ResizeObserver(() => { closeObjectMenu(); cancelDrawing(); endGesture(); endPan(); fitStage() })
+  observer = new ResizeObserver(() => { closeObjectMenu(); cancelDrawing(); endGesture(); endMarquee(); endPan(); fitStage() })
   if (workspace.value) observer.observe(workspace.value)
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('keyup', onKeyup)
@@ -576,7 +752,7 @@ onMounted(() => {
   document.addEventListener('scroll', closeObjectMenu, true)
 })
 onBeforeUnmount(() => {
-  cancelDrawing(); endGesture(); endPan(); observer?.disconnect(); clearTimeout(toastTimer)
+  cancelDrawing(); endGesture(); endMarquee(); endPan(); observer?.disconnect(); clearTimeout(toastTimer)
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('keyup', onKeyup)
   window.removeEventListener('blur', onBlur)
@@ -589,17 +765,24 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="app-shell" :aria-busy="busy">
-    <header class="topbar">
+    <header class="topbar" :inert="modalOpen">
       <div class="brand"><img class="brand-logo" :src="logoUrl" alt="瓦肯青少年编程 VULCODING" /></div>
       <div class="toolbar">
         <button class="button" :disabled="busy" @click="projectInput?.click()"><span class="button-icon">↗</span>打开项目</button>
         <span class="toolbar-divider"></span>
-        <button class="button" :disabled="busy" @click="bgInput?.click()"><span class="button-icon">▧</span>{{ background ? '替换背景' : '加载背景' }}</button>
+        <div class="background-wrap">
+          <button class="button" :disabled="busy" :aria-expanded="showBackgroundMenu" @click="showBackgroundMenu = !showBackgroundMenu"><span class="button-icon">▧</span>{{ background ? '替换背景' : '加载背景' }}<span>⌄</span></button>
+          <div v-if="showBackgroundMenu" class="export-menu">
+            <button @click="bgInput?.click()">加载背景图片</button>
+            <button @click="openColorDialog('create')">创建纯色背景</button>
+          </div>
+        </div>
         <button class="button" aria-keyshortcuts="a" title="添加图片（A）" :disabled="!background || busy" @click="layerInput?.click()"><span class="button-icon">＋</span>添加图片 <kbd>A</kbd></button>
         <button class="button" :disabled="!background || busy" @click="saveProject"><span class="button-icon">▣</span>保存项目<span v-if="dirty && background" class="unsaved-dot" title="有未保存更改"></span></button>
         <div class="export-wrap">
           <button class="button primary" aria-label="导出" :disabled="!background || busy" :aria-expanded="showExport" @click="showExport = !showExport">导出<span class="chevron" aria-hidden="true">⌄</span></button>
           <div v-if="showExport" class="export-menu">
+            <button class="object-export-action" @click="openPygameExport">导出 Pygame Zero 项目…</button>
             <button class="object-export-action" :disabled="!selectedImage || busy" @click="exportObject(selectedImage)">导出选中对象…<small v-if="selectedExportInfo">{{ selectedExportInfo.width }} × {{ selectedExportInfo.height }} px · {{ selectedExportInfo.label }}</small><small v-else>请先选择角色或物品图片</small></button>
             <div class="export-options"><strong>PNG 标注选项</strong><label><input v-model="exportCoordinatesOption" type="checkbox" />包含坐标</label><label><input v-model="exportNamesOption" type="checkbox" />包含名称</label><small>应用于所有图片和图形</small></div>
             <button @click="exportPng">合成图片 <span>PNG</span></button>
@@ -613,63 +796,75 @@ onBeforeUnmount(() => {
       <input ref="projectInput" data-testid="project-input" type="file" accept=".json,application/json" hidden @change="openProject" />
     </header>
 
-    <main class="main-layout">
+    <main class="main-layout" :inert="modalOpen">
       <section class="editor-panel" aria-label="图片编辑区">
         <div class="editor-heading"><div><span class="section-kicker">WORKSPACE</span><h1>{{ background ? background.name : '让每个位置，都有坐标。' }}</h1></div><span class="local-badge"><i></i>本地处理</span></div>
-        <div ref="workspace" class="workspace" :class="{ 'has-background': background, drawing: tool !== 'select', panning }" @wheel="zoomMap" @contextmenu.prevent @pointerdown.capture="beginPan" @pointermove.capture="updatePan" @pointerup.capture="endPan" @pointercancel="endPan" @lostpointercapture="endPan" @pointerdown.self="selectedId = null">
+        <div ref="workspace" class="workspace" :class="{ 'has-background': background, drawing: tool !== 'select', panning }" @wheel="zoomMap" @contextmenu.prevent @pointerdown.capture="beginPan" @pointermove.capture="updatePan" @pointerup.capture="endPan" @pointercancel="endPan" @lostpointercapture="endPan" @pointerdown.self="!busy && $event.button === 0 && (selectedId = null)">
           <div v-if="background" class="drawing-tools" aria-label="绘图工具"><button aria-label="选择工具" aria-keyshortcuts="1" :aria-pressed="tool === 'select'" :disabled="busy" @click="selectTool('select')">↖ 选择 <kbd>1</kbd></button><button aria-label="绘制正方形" aria-keyshortcuts="2" :aria-pressed="tool === 'rectangle'" :disabled="busy" @click="selectTool('rectangle')">□ 正方形 <kbd>2</kbd></button><button aria-label="绘制圆形" aria-keyshortcuts="3" :aria-pressed="tool === 'ellipse'" :disabled="busy" @click="selectTool('ellipse')">○ 圆形 <kbd>3</kbd></button><span>{{ tool === 'select' ? '选择图形后按 Ctrl 自由缩放' : ctrlPressed ? 'Ctrl：自由宽高' : '按住 Ctrl 绘制矩形 / 椭圆' }}</span></div>
           <div v-if="!background" class="empty-workspace">
             <div class="empty-art" aria-hidden="true"><div class="art-back"></div><div class="art-front"><svg viewBox="0 0 80 60" fill="none"><circle cx="57" cy="17" r="6" fill="currentColor"/><path d="M10 48 29 26l15 17 10-11 17 16H10Z" fill="currentColor"/></svg></div><span class="art-cross">＋</span><span class="art-corner"></span></div>
             <span class="empty-kicker">YOUR CANVAS STARTS HERE</span>
-            <h2>先放一张背景图片</h2>
+            <h2>先选择一种背景</h2>
             <p>添加角色与物品，自由摆放、等比例缩放。<br />每一处位置，都能实时读取原图坐标。</p>
             <button class="button primary load-button" :disabled="busy" @click="bgInput?.click()"><span>＋</span>加载背景图片</button>
+            <button class="button solid-start" :disabled="busy" @click="openColorDialog('create')">创建纯色背景</button>
             <span class="file-note">PNG / JPEG / WebP · 图片仅在本机处理</span>
-            <div class="workflow"><span><b>01</b>加载背景</span><i>→</i><span><b>02</b>摆放图片</span><i>→</i><span><b>03</b>导出成果</span></div>
+            <div class="workflow"><span><b>01</b>设置背景</span><i>→</i><span><b>02</b>摆放图片</span><i>→</i><span><b>03</b>导出成果</span></div>
           </div>
-          <div v-else ref="stage" class="stage" :style="stageStyle" data-testid="stage" @pointerdown="beginDrawing" @pointermove="updateDrawing" @pointerup="finishDrawing" @pointercancel="cancelDrawing" @lostpointercapture="cancelDrawing">
-            <img class="background-image" :src="background.src" :alt="background.name" draggable="false" />
+          <div v-else ref="stage" class="stage" :style="stageStyle" data-testid="stage" @pointerdown="beginDrawing" @pointermove="updateDrawing($event); updateMarquee($event)" @pointerup="finishDrawing($event); finishMarquee($event)" @pointercancel="cancelDrawing(); endMarquee()" @lostpointercapture="cancelDrawing(); endMarquee()">
+            <img v-if="background.kind !== 'color'" class="background-image" :src="background.src" :alt="background.name" draggable="false" />
             <span class="origin-label">0, 0</span>
-            <div v-for="(layer, index) in layers" :key="layer.id" class="image-layer" :class="{ selected: layer.id === selectedId }" :style="layerStyle(layer, index)" :data-layer-id="layer.id" data-testid="image-layer" role="button" tabindex="0" :aria-label="`选择 ${layer.name}`" :aria-pressed="layer.id === selectedId" @keydown.enter="selectCanvasLayer(layer.id)" @keydown.space.prevent="selectCanvasLayer(layer.id)" @pointerdown.stop="beginGesture($event, layer)" @pointermove="updateGesture" @pointerup="endGesture" @pointercancel="endGesture" @lostpointercapture="endGesture">
+            <div v-for="(layer, index) in layers" :key="layer.id" class="image-layer" :class="{ selected: isSelected(layer.id) }" :style="layerStyle(layer, index)" :data-layer-id="layer.id" data-testid="image-layer" role="button" tabindex="0" :aria-label="`选择 ${layer.name}`" :aria-pressed="isSelected(layer.id)" @keydown.enter.self="selectCanvasLayer(layer.id, $event)" @keydown.space.self.prevent="selectCanvasLayer(layer.id, $event)" @pointerdown.stop="beginGesture($event, layer)" @pointermove="updateGesture" @pointerup="finishGesture" @pointercancel="endGesture" @lostpointercapture="endGesture">
               <img v-if="isImageLayer(layer)" :src="layer.src" :alt="layer.name" draggable="false" />
               <ShapeView v-else :shape="layer" />
-              <template v-if="layer.id === selectedId">
+              <template v-if="selected?.id === layer.id">
                 <button v-for="corner in corners" :key="corner" class="resize-handle" :class="corner" :data-testid="`resize-${corner}`" :aria-label="`从${cornerLabels[corner]}等比例缩放`" @pointerdown.stop="beginGesture($event, layer, corner)"></button>
               </template>
             </div>
+            <div v-if="selectionBox && selectedLayers.length > 1" class="group-selection" :style="{ ...layerStyle(selectionBox, layers.length + 1) }" data-testid="group-selection"></div>
+            <div v-if="marqueeBox" class="marquee-selection" :style="layerStyle(marqueeBox, layers.length + 5)" data-testid="marquee-selection"></div>
             <div v-if="draft" class="shape-preview" :style="layerStyle(draft, layers.length)"><ShapeView :shape="draft" /></div>
             <DistanceGuides v-if="hasGuides && guides" :guides="guides" :scale="scale" :style="{ zIndex: layers.length + 4 }" />
-            <div class="annotation-overlay name-overlay" :style="{ zIndex: 0 }"><div v-for="(layer, index) in layers" :key="layer.id" class="annotation-box" :style="layerStyle(layer, index)"><span v-if="layer.name && layer.id === selectedId && !hasGuides" class="object-name" data-testid="object-name">{{ layer.name }}</span></div></div>
+            <div class="annotation-overlay name-overlay" :style="{ zIndex: 0 }"><div v-for="(layer, index) in layers" :key="layer.id" class="annotation-box" :style="layerStyle(layer, index)"><span v-if="layer.name && selected?.id === layer.id && !hasGuides" class="object-name" data-testid="object-name">{{ layer.name }}</span></div></div>
             <div v-if="selected && (!hasGuides || guideMode === 'keyboard')" class="annotation-overlay coordinate-overlay" :style="{ zIndex: layers.length + 3 }"><div class="annotation-box" :style="layerStyle(selected, 0)"><template v-if="isImageLayer(selected)"><i class="center-marker"></i><span class="selection-tag center-tag" data-testid="center-label">{{ formatPoint(selected.x + selected.width / 2, selected.y + selected.height / 2) }}</span></template><template v-else><span class="selection-tag" data-testid="top-left-label">{{ formatPoint(selected.x, selected.y) }}</span><span class="selection-tag bottom-tag" data-testid="bottom-right-label">{{ formatPoint(selected.x + selected.width, selected.y + selected.height) }}</span></template></div></div>
           </div>
+        </div>
+        <div v-if="background" class="properties-dock" role="region" aria-label="画布属性栏">
+          <SelectionProperties v-if="selectedLayers.length && tool === 'select'" :layers="selectedLayers" :disabled="busy" @edit="editSelection" @align="arrangeSelection" @distribute="distribute" />
+          <p v-else class="selection-empty">选择对象后可编辑位置与尺寸，多选后可对齐和分布。</p>
         </div>
         <div class="editor-footer"><span><span class="hint-icon">⌖</span>{{ background ? '拖动对象 · 四角缩放 · 滚轮缩放地图 · 右键拖动地图' : '原点位于背景左上角，横轴向右，纵轴向下' }}</span><span class="zoom-readout">{{ background ? `${round(background.width)} × ${round(background.height)} px · ${Math.round(scale * 100)}%` : '坐标单位：原图像素' }} <button v-if="background" class="fit-map" :disabled="busy" @click="cancelDrawing(); endGesture(); fitStage(true)">适应窗口</button></span></div>
       </section>
 
       <aside class="sidebar">
         <div class="sidebar-title"><h2>对象图层</h2></div>
-        <p class="sidebar-description">拖曳调整顺序，越靠上越在上层；右击导出图片。</p>
+        <p class="sidebar-description">Shift / Ctrl 点击多选，空白处拖动框选；拖曳卡片排序。</p>
         <div ref="layerList" class="layer-list" @dragend="endLayerDrag" @dragleave.self="dropTarget = null">
-          <div v-if="!layers.length" class="empty-layers"><span class="stack-icon">▱<br />▱</span><strong>还没有添加图片</strong><p>{{ background ? '添加角色或物品，开始摆放。' : '加载背景后，在这里管理图片。' }}</p><button v-if="background" class="text-button" :disabled="busy" @click="layerInput?.click()">＋ 添加第一张图片</button></div>
-          <div v-for="(layer, index) in [...layers].reverse()" :key="layer.id" class="layer-card" :class="{ active: layer.id === selectedId, dragging: draggedLayerId === layer.id, 'drop-before': dropTarget?.id === layer.id && dropTarget.before, 'drop-after': dropTarget?.id === layer.id && !dropTarget.before }" role="button" tabindex="0" :aria-label="`选择图层 ${layer.name || '未命名对象'}`" :aria-pressed="layer.id === selectedId" :draggable="!busy && editingLayerId !== layer.id" :data-card-id="layer.id" data-testid="layer-card" @contextmenu="openObjectMenu($event, layer)" @click="chooseLayer(layer.id)" @keydown.enter.self="chooseLayer(layer.id)" @keydown.space.self.prevent="chooseLayer(layer.id)" @dragstart="startLayerDrag($event, layer.id)" @dragover.prevent="previewLayerDrop($event, layer.id)" @drop.stop.prevent="dropLayer($event, layer.id)">
+          <div v-if="!layers.length" class="empty-layers"><span class="stack-icon">▱<br />▱</span><strong>还没有添加图片</strong><p>{{ background ? '添加角色或物品，开始摆放。' : '设置背景后，在这里管理图片。' }}</p><button v-if="background" class="text-button" :disabled="busy" @click="layerInput?.click()">＋ 添加第一张图片</button></div>
+          <div v-for="(layer, index) in [...layers].reverse()" :key="layer.id" class="layer-card" :class="{ active: isSelected(layer.id), dragging: draggedLayerId === layer.id, 'drop-before': dropTarget?.id === layer.id && dropTarget.before, 'drop-after': dropTarget?.id === layer.id && !dropTarget.before }" role="button" tabindex="0" :aria-label="`选择图层 ${layer.name || '未命名对象'}`" :aria-pressed="isSelected(layer.id)" :draggable="!busy && editingLayerId !== layer.id" :data-card-id="layer.id" data-testid="layer-card" @contextmenu="openObjectMenu($event, layer)" @click="chooseLayer(layer.id, $event)" @keydown.enter.self="chooseLayer(layer.id, $event)" @keydown.space.self.prevent="chooseLayer(layer.id, $event)" @dragstart="startLayerDrag($event, layer.id)" @dragover.prevent="previewLayerDrop($event, layer.id)" @drop.stop.prevent="dropLayer($event, layer.id)">
             <button class="layer-delete" :aria-label="`删除${isImageLayer(layer) ? '图片' : '图形'}`" :title="`删除 ${layer.name || '未命名对象'}`" :disabled="busy" draggable="false" @click.stop="removeLayer(layer.id)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7m4-7v7" /></svg></button>
             <div class="layer-card-header"><span class="layer-number" data-testid="layer-number" :title="`图层顺序 ${index + 1}`">{{ index + 1 }}</span><div class="thumbnail"><img v-if="isImageLayer(layer)" :src="layer.src" alt="" draggable="false" /><span v-else class="shape-thumbnail" :class="layer.kind" :style="{ borderColor: layer.color, backgroundColor: layer.fillColor ? `${layer.fillColor}40` : 'transparent' }"></span></div><div class="layer-name"><EditableName :name="layer.name" :disabled="busy" @select="chooseLayer(layer.id)" @rename="renameLayer(layer.id, $event)" @editing="setNameEditing(layer.id, $event)" /><small>{{ round(layer.width) }} × {{ round(layer.height) }} px</small></div></div>
-            <div v-if="isImageLayer(layer) && layer.id === selectedId" class="anchor-grid" data-testid="anchor-grid"><span v-for="(point, key) in anchorPoints(layer)" :key="key"><small>{{ key }}</small><b>{{ formatPoint(point.x, point.y) }}</b></span></div>
-            <div v-else class="layer-coordinates"><span>左上角 <b>{{ formatPoint(layer.x, layer.y) }}</b></span><span>中心点 <b>{{ formatPoint(layer.x + layer.width / 2, layer.y + layer.height / 2) }}</b></span><span>右下角 <b>{{ formatPoint(layer.x + layer.width, layer.y + layer.height) }}</b></span></div>
+            <div class="layer-coordinates"><span>左上角 <b>{{ formatPoint(layer.x, layer.y) }}</b></span><span>中心点 <b>{{ formatPoint(layer.x + layer.width / 2, layer.y + layer.height / 2) }}</b></span><span>右下角 <b>{{ formatPoint(layer.x + layer.width, layer.y + layer.height) }}</b></span></div>
+            <details v-if="isImageLayer(layer)" class="anchor-details" @pointerdown.stop @dragstart.stop.prevent>
+              <summary @click.stop>锚点坐标</summary>
+              <div class="anchor-grid" data-testid="anchor-grid"><span v-for="(point, key) in anchorPoints(layer)" :key="key"><small>{{ key }}</small><b>{{ formatPoint(point.x, point.y) }}</b></span></div>
+            </details>
           </div>
         </div>
         <section v-if="selectedShape || tool !== 'select'" class="shape-colors" aria-label="图形颜色"><div><strong>边框颜色</strong><div class="color-swatches"><button v-for="color in palette" :key="color.value" :aria-label="`边框${color.name}`" :aria-pressed="borderColor === color.value" :disabled="busy" :style="{ background: color.value }" @click="setShapeColor('color', color.value)"></button></div></div><div><strong>填充颜色 <small>25% 不透明度</small></strong><div class="color-swatches"><button class="no-fill" aria-label="无填充" :aria-pressed="!fillColor" :disabled="busy" @click="setShapeColor('fillColor', null)">∅</button><button v-for="color in palette" :key="color.value" :aria-label="`填充${color.name}`" :aria-pressed="fillColor === color.value" :disabled="busy" :style="{ background: color.value }" @click="setShapeColor('fillColor', color.value)"></button></div></div></section>
-        <div v-if="background" class="background-info"><span>背景图片</span><strong :title="background.name">{{ background.name }}</strong><small>{{ background.width }} × {{ background.height }} px</small></div>
+        <div v-if="background" class="background-info"><span>{{ background.kind === 'color' ? '纯色背景' : '背景图片' }}</span><strong :title="background.name">{{ background.kind === 'color' ? background.color : background.name }}</strong><small>{{ background.width }} × {{ background.height }} px</small><button v-if="background.kind === 'color'" class="text-button" :disabled="busy" @click="openColorDialog('edit')">修改背景颜色</button></div>
       </aside>
     </main>
-    <footer class="app-footer"><span>VULCODING / IMAGE COORDINATE STUDIO</span><span>本机编辑，精确定位。<i></i>无需上传</span></footer>
+    <footer class="app-footer" :inert="modalOpen"><span>VULCODING / IMAGE COORDINATE STUDIO</span><span>本机编辑，精确定位。<i></i>无需上传</span></footer>
     <div v-if="objectMenu && contextImage && contextExportInfo" ref="objectMenuElement" class="object-export-menu" role="menu" aria-label="图片对象操作" :style="{ left: `${objectMenu.x}px`, top: `${objectMenu.y}px` }" @contextmenu.prevent>
       <button role="menuitem" :disabled="busy" @click="exportObject(contextImage)">导出此对象…<small>{{ contextExportInfo.width }} × {{ contextExportInfo.height }} px · {{ contextExportInfo.label }}</small></button>
     </div>
     <div v-if="busy" class="busy-indicator" role="status">正在处理图片…</div>
     <div v-if="message" class="toast" :class="{ error: isError }" role="status"><span>{{ isError ? '!' : '✓' }}</span>{{ message }}<button aria-label="关闭提示" @click="message = ''">×</button></div>
+    <ColorBackgroundDialog v-if="colorDialog" :current="currentColorBackground" @close="colorDialog = null" @apply="applyColorBackground" />
+    <PygameExportDialog v-if="exportSnapshot" :project="exportSnapshot" @close="exportSnapshot = null" @locate="locateExportIssue" @saved="pygameSaved" />
     <div v-if="confirmReplace" class="modal-backdrop" @click.self="cancelReplace">
-      <section class="modal" role="dialog" aria-modal="true" aria-labelledby="replace-title"><span class="section-kicker">REPLACE BACKGROUND</span><h2 id="replace-title">替换背景图片？</h2><p>替换后将清空当前 {{ layers.length }} 张叠加图片。需要保留时，请先取消并保存项目。</p><div class="modal-actions"><button class="button" autofocus @click="cancelReplace">取消</button><button class="button primary" @click="replaceBackground">替换并清空</button></div></section>
+      <section class="modal" role="dialog" aria-modal="true" aria-labelledby="replace-title"><span class="section-kicker">REPLACE BACKGROUND</span><h2 id="replace-title">替换背景？</h2><p>替换后将清空当前 {{ layers.length }} 个图层。需要保留时，请先取消并保存项目。</p><div class="modal-actions"><button class="button" autofocus @click="cancelReplace">取消</button><button class="button primary" @click="replaceBackground">替换并清空</button></div></section>
     </div>
   </div>
 </template>

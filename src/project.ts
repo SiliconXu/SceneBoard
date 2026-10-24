@@ -1,11 +1,14 @@
 import { anchorPoints, type Rect, type Size } from './geometry'
+import { validCanvasSize, validColor } from './background'
 
-export interface Background extends Size { name: string; src: string }
+export interface ImageBackground extends Size { kind?: 'image'; name: string; src: string }
+export interface ColorBackground extends Size { kind: 'color'; name: string; color: string }
+export type Background = ImageBackground | ColorBackground
 interface BaseLayer extends Rect { id: string; name: string }
 export interface ImageLayer extends BaseLayer { kind?: 'image'; src: string }
 export interface ShapeLayer extends BaseLayer { kind: 'rectangle' | 'ellipse'; color: string; fillColor?: string | null }
 export type Layer = ImageLayer | ShapeLayer
-export interface Project { version: 1 | 2; background: Background; layers: Layer[] }
+export interface Project { version: 1 | 2 | 3; background: Background; layers: Layer[] }
 export const isImageLayer = (layer: Layer): layer is ImageLayer => !layer.kind || layer.kind === 'image'
 
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -15,9 +18,17 @@ const imageSource = (value: unknown): value is string => typeof value === 'strin
 
 export function parseProject(text: string): Project {
   const data: unknown = JSON.parse(text)
-  if (!object(data) || (data.version !== 1 && data.version !== 2)) throw new Error('项目格式或版本不受支持。')
+  if (!object(data) || (data.version !== 1 && data.version !== 2 && data.version !== 3)) throw new Error('项目格式或版本不受支持。')
   const bg = data.background
-  if (!object(bg) || typeof bg.name !== 'string' || !imageSource(bg.src) || !positive(bg.width) || !positive(bg.height) || !Number.isInteger(bg.width) || !Number.isInteger(bg.height)) throw new Error('项目中的背景图片无效。')
+  if (!object(bg) || typeof bg.name !== 'string' || !positive(bg.width) || !positive(bg.height) || !Number.isInteger(bg.width) || !Number.isInteger(bg.height)) throw new Error('项目中的背景尺寸无效。')
+  let background: Background
+  if (data.version === 3 && bg.kind === 'color') {
+    if (typeof bg.color !== 'string' || !validColor(bg.color) || !validCanvasSize(bg.width, bg.height)) throw new Error('项目中的背景颜色或尺寸无效。')
+    background = { kind: 'color', name: bg.name, color: bg.color, width: bg.width, height: bg.height }
+  } else {
+    if ((data.version === 3 ? bg.kind !== 'image' : bg.kind !== undefined && bg.kind !== 'image') || !imageSource(bg.src)) throw new Error('项目中的背景图片无效。')
+    background = { name: bg.name, src: bg.src, width: bg.width, height: bg.height, ...(bg.kind === 'image' ? { kind: 'image' as const } : {}) }
+  }
   if (!Array.isArray(data.layers)) throw new Error('项目中的图层列表无效。')
   const bounds = { width: bg.width, height: bg.height }
   const ids = new Set<string>()
@@ -30,16 +41,16 @@ export function parseProject(text: string): Project {
       if (!imageSource(layer.src)) throw new Error('项目中的图片内容无效。')
       return { ...rect, src: layer.src, ...(layer.kind === 'image' ? { kind: 'image' as const } : {}) }
     }
-    if (data.version !== 2 || (layer.kind !== 'rectangle' && layer.kind !== 'ellipse') || typeof layer.color !== 'string' || !/^#[0-9a-f]{6}$/i.test(layer.color)) throw new Error('项目中的图形数据无效。')
+    if (data.version === 1 || (layer.kind !== 'rectangle' && layer.kind !== 'ellipse') || typeof layer.color !== 'string' || !/^#[0-9a-f]{6}$/i.test(layer.color)) throw new Error('项目中的图形数据无效。')
     if (layer.fillColor !== undefined && layer.fillColor !== null && (typeof layer.fillColor !== 'string' || !/^#[0-9a-f]{6}$/i.test(layer.fillColor))) throw new Error('项目中的填充颜色无效。')
     return { ...rect, kind: layer.kind, color: layer.color, ...(layer.fillColor !== undefined ? { fillColor: layer.fillColor } : {}) }
   })
-  return { version: data.version, background: { name: bg.name, src: bg.src, width: bg.width, height: bg.height }, layers }
+  return { version: data.version, background, layers }
 }
 
 export function coordinateData(background: Background, layers: Layer[]) {
   return {
-    background: { name: background.name, width: background.width, height: background.height },
+    background: { name: background.name, width: background.width, height: background.height, kind: background.kind ?? 'image', ...(background.kind === 'color' ? { color: background.color } : {}) },
     layers: layers.map(layer => ({
       id: layer.id, name: layer.name, kind: layer.kind ?? 'image',
       topLeft: { x: Math.round(layer.x), y: Math.round(layer.y) },
