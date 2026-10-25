@@ -1,6 +1,7 @@
 import type { Size } from './geometry'
 import { isImageLayer, type Background, type Layer, type ShapeLayer } from './project'
 import { decodeImage } from './files'
+import { drawImageContent } from './image-processing'
 
 export interface AnnotationOptions { coordinates: boolean; names: boolean }
 
@@ -69,7 +70,7 @@ export async function renderComposition(background: Background, layers: Layer[],
   // All names sit behind all objects, so a caption never hides another character.
   if (options.names) layers.forEach(layer => drawAnnotations(context, layer, background, { coordinates: false, names: true }))
   layers.forEach((layer, index) => {
-    if (isImageLayer(layer)) context.drawImage(images[index]!, layer.x, layer.y, layer.width, layer.height)
+    if (isImageLayer(layer)) drawImageContent(context, images[index]!, layer, layer)
     else drawShape(context, layer)
   })
   // Coordinates remain above the full composition.

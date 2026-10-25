@@ -62,7 +62,7 @@ test('create, recolor, save and reopen a solid background; cancel replacements a
   await expect(page.getByTestId('stage')).toHaveCSS('background-color', 'rgb(18, 58, 188)')
   await expect(page.getByTestId('stage')).toHaveCSS('background-image', 'none')
   const saved = JSON.parse((await downloadBytes(page, () => page.getByRole('button', { name: '保存项目', exact: false }).click())).toString())
-  expect(saved.version).toBe(3); expect(saved.background.color).toBe('#123abc'); expect(saved.background.src).toBeUndefined()
+  expect(saved.version).toBe(4); expect(saved.background.color).toBe('#123abc'); expect(saved.background.src).toBeUndefined()
   await expect(page.locator('.unsaved-dot')).toHaveCount(0)
   await page.getByTestId('project-input').setInputFiles({ name: 'saved.frame.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(saved)) })
   await expect(page.getByTestId('stage')).toHaveCSS('background-color', 'rgb(18, 58, 188)')

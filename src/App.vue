@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { anchorPoints, clamp, drawRect, fitImage, moveRect, resizeFreeRect, resizeRect, screenToImage, type Corner, type Point, type Rect } from './geometry'
-import { coordinateData, isImageLayer, parseProject, type Background, type ImageLayer, type Layer, type Project, type ShapeLayer } from './project'
+import { coordinateData, isImageLayer, parseProject, type Background, type ImageLayer, type Layer, type Project, type ShapeLayer, type AnimationGroup } from './project'
 import { decodeImage, download, downloadJson, readImage } from './files'
 import { renderComposition } from './render'
 import { imageExportInfo, renderImageExport } from './image-export'
 import ShapeView from './ShapeView.vue'
+import ImageContent from './ImageContent.vue'
+import CropDialog from './CropDialog.vue'
+import AnimationDialog from './AnimationDialog.vue'
+import { sourceRect } from './image-processing'
 import EditableName from './EditableName.vue'
 import DistanceGuides from './DistanceGuides.vue'
 import { proximityGuides, type Guides } from './guides'
@@ -22,7 +26,11 @@ const showBackgroundMenu = ref(false)
 const colorDialog = ref<'create' | 'edit' | null>(null)
 const exportSnapshot = ref<Project | null>(null)
 const currentColorBackground = computed(() => colorDialog.value === 'edit' && background.value?.kind === 'color' ? background.value : undefined)
-const modalOpen = computed(() => !!colorDialog.value || !!exportSnapshot.value || confirmReplace.value)
+const cropSnapshot = ref<ImageLayer | null>(null)
+const animations = ref<AnimationGroup[]>([])
+const animationsOpen = ref(false)
+const animationInitialId = ref<string>()
+const modalOpen = computed(() => !!colorDialog.value || !!exportSnapshot.value || !!cropSnapshot.value || animationsOpen.value || confirmReplace.value)
 const layers = ref<Layer[]>([])
 const selectedIds = ref<string[]>([])
 const activeId = ref<string | null>(null)
@@ -73,6 +81,30 @@ function editSelection(field: RectField, value: number, anchor: PositionAnchor, 
   } catch (error) { notify(errorText(error), true) }
 }
 function arrangeSelection(alignment: Alignment) { if (!busy.value) { endGesture(); applyRects(alignSelection(selectedLayers.value, alignment)) } }
+function flipSelection(axis: 'flipX' | 'flipY') {
+  if (busy.value) return
+  endGesture()
+  for (const layer of selectedLayers.value.filter(isImageLayer)) { layer[axis] = !layer[axis]; dirty.value = true }
+}
+function openCrop() {
+  if (!selectedImage.value || busy.value) return
+  cancelDrawing(); endGesture(); endMarquee(); endPan(); closeObjectMenu()
+  cropSnapshot.value = JSON.parse(JSON.stringify(selectedImage.value))
+}
+function applyCrop(result: ImageLayer) {
+  const layer = layers.value.find(item => item.id === result.id)
+  if (layer && isImageLayer(layer)) { Object.assign(layer, result); dirty.value = true; guides.value = null; guideMode.value = null }
+  cropSnapshot.value = null
+}
+function openAnimations(id?: string) {
+  if (!background.value || busy.value) return
+  cancelDrawing(); endGesture(); endMarquee(); endPan(); closeObjectMenu()
+  animationInitialId.value = id; animationsOpen.value = true
+}
+function applyAnimations(groups: AnimationGroup[]) {
+  if (JSON.stringify(groups) !== JSON.stringify(animations.value)) { animations.value = groups; dirty.value = true }
+  animationsOpen.value = false
+}
 function distribute(axis: Axis) {
   if (busy.value) return
   endGesture()
@@ -247,10 +279,11 @@ function openPygameExport() {
   if (!background.value || busy.value) return
   cancelDrawing(); endGesture(); endMarquee(); endPan(); closeObjectMenu()
   showExport.value = false
-  exportSnapshot.value = JSON.parse(JSON.stringify({ version: 3, background: background.value, layers: layers.value }))
+  exportSnapshot.value = JSON.parse(JSON.stringify({ version: 4, background: background.value, layers: layers.value, animations: animations.value }))
 }
-async function locateExportIssue(id: string) {
+async function locateExportIssue(id: string, target?: 'animation') {
   exportSnapshot.value = null
+  if (target === 'animation') { openAnimations(id); return }
   chooseLayer(id)
   await nextTick()
   const card = Array.from(layerList.value?.querySelectorAll<HTMLElement>('[data-card-id]') ?? []).find(item => item.dataset.cardId === id)
@@ -629,7 +662,7 @@ async function copyCoordinates() {
 async function saveProject() {
   if (!background.value || busy.value) return
   const bg: Background = background.value.kind === 'color' ? { ...background.value } : { ...background.value, kind: 'image' }
-  const project: Project = { version: 3, background: bg, layers: layers.value }
+  const project: Project = { version: 4, background: bg, layers: layers.value, animations: animations.value }
   busy.value = true
   try {
     if (await downloadJson(project, `${fileStem()}.frame.json`)) {
@@ -654,13 +687,19 @@ async function openProject(event: Event) {
     project.layers.forEach((layer, index) => {
       if (!isImageLayer(layer)) return
       const image = images[index + 1]!
-      const ratio = image.naturalWidth / image.naturalHeight
+      const content = sourceRect({ width: image.naturalWidth, height: image.naturalHeight }, layer)
+      const ratio = content.width / content.height
       if (Math.abs(layer.width / layer.height - ratio) / ratio > 1e-6) throw new Error('项目中的图片宽高比例无效。')
     })
+    await Promise.all((project.animations ?? []).flatMap(group => group.frames.map(async frame => {
+      const image = await decodeImage(frame.src)
+      if (image.naturalWidth !== frame.width || image.naturalHeight !== frame.height) throw new Error('动画帧尺寸与图片不一致。')
+    })))
     if (dirty.value && background.value && !window.confirm('当前项目有未保存的更改。打开新项目会替换当前内容，是否继续？')) return
     cancelDrawing(); endGesture(); endMarquee(); endPan(); tool.value = 'select'
     background.value = project.background
     layers.value = project.layers
+    animations.value = project.animations ?? []
     addedImageCount = project.layers.filter(isImageLayer).length
     selectedId.value = project.layers.at(-1)?.id ?? null
     dirty.value = false
@@ -685,7 +724,7 @@ async function exportPng() {
 }
 
 function onKeydown(event: KeyboardEvent) {
-  if (colorDialog.value || exportSnapshot.value) return
+  if (modalOpen.value) return
   if (objectMenu.value) {
     if (event.key === 'Escape' || event.key === 'Tab') {
       closeObjectMenu()
@@ -815,7 +854,7 @@ onBeforeUnmount(() => {
             <img v-if="background.kind !== 'color'" class="background-image" :src="background.src" :alt="background.name" draggable="false" />
             <span class="origin-label">0, 0</span>
             <div v-for="(layer, index) in layers" :key="layer.id" class="image-layer" :class="{ selected: isSelected(layer.id) }" :style="layerStyle(layer, index)" :data-layer-id="layer.id" data-testid="image-layer" role="button" tabindex="0" :aria-label="`选择 ${layer.name}`" :aria-pressed="isSelected(layer.id)" @keydown.enter.self="selectCanvasLayer(layer.id, $event)" @keydown.space.self.prevent="selectCanvasLayer(layer.id, $event)" @pointerdown.stop="beginGesture($event, layer)" @pointermove="updateGesture" @pointerup="finishGesture" @pointercancel="endGesture" @lostpointercapture="endGesture">
-              <img v-if="isImageLayer(layer)" :src="layer.src" :alt="layer.name" draggable="false" />
+              <ImageContent v-if="isImageLayer(layer)" :layer="layer" />
               <ShapeView v-else :shape="layer" />
               <template v-if="selected?.id === layer.id">
                 <button v-for="corner in corners" :key="corner" class="resize-handle" :class="corner" :data-testid="`resize-${corner}`" :aria-label="`从${cornerLabels[corner]}等比例缩放`" @pointerdown.stop="beginGesture($event, layer, corner)"></button>
@@ -830,20 +869,20 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div v-if="background" class="properties-dock" role="region" aria-label="画布属性栏">
-          <SelectionProperties v-if="selectedLayers.length && tool === 'select'" :layers="selectedLayers" :disabled="busy" @edit="editSelection" @align="arrangeSelection" @distribute="distribute" />
+          <SelectionProperties v-if="selectedLayers.length && tool === 'select'" :layers="selectedLayers" :disabled="busy" @edit="editSelection" @align="arrangeSelection" @distribute="distribute" @flip="flipSelection" @crop="openCrop" />
           <p v-else class="selection-empty">选择对象后可编辑位置与尺寸，多选后可对齐和分布。</p>
         </div>
         <div class="editor-footer"><span><span class="hint-icon">⌖</span>{{ background ? '拖动对象 · 四角缩放 · 滚轮缩放地图 · 右键拖动地图' : '原点位于背景左上角，横轴向右，纵轴向下' }}</span><span class="zoom-readout">{{ background ? `${round(background.width)} × ${round(background.height)} px · ${Math.round(scale * 100)}%` : '坐标单位：原图像素' }} <button v-if="background" class="fit-map" :disabled="busy" @click="cancelDrawing(); endGesture(); fitStage(true)">适应窗口</button></span></div>
       </section>
 
       <aside class="sidebar">
-        <div class="sidebar-title"><h2>对象图层</h2></div>
+        <div class="sidebar-title"><h2>对象图层</h2><button class="text-button animation-entry" :disabled="!background || busy" @click="openAnimations()">动画素材…<small v-if="animations.length">{{ animations.length }} 组</small></button></div>
         <p class="sidebar-description">Shift / Ctrl 点击多选，空白处拖动框选；拖曳卡片排序。</p>
         <div ref="layerList" class="layer-list" @dragend="endLayerDrag" @dragleave.self="dropTarget = null">
           <div v-if="!layers.length" class="empty-layers"><span class="stack-icon">▱<br />▱</span><strong>还没有添加图片</strong><p>{{ background ? '添加角色或物品，开始摆放。' : '设置背景后，在这里管理图片。' }}</p><button v-if="background" class="text-button" :disabled="busy" @click="layerInput?.click()">＋ 添加第一张图片</button></div>
           <div v-for="(layer, index) in [...layers].reverse()" :key="layer.id" class="layer-card" :class="{ active: isSelected(layer.id), dragging: draggedLayerId === layer.id, 'drop-before': dropTarget?.id === layer.id && dropTarget.before, 'drop-after': dropTarget?.id === layer.id && !dropTarget.before }" role="button" tabindex="0" :aria-label="`选择图层 ${layer.name || '未命名对象'}`" :aria-pressed="isSelected(layer.id)" :draggable="!busy && editingLayerId !== layer.id" :data-card-id="layer.id" data-testid="layer-card" @contextmenu="openObjectMenu($event, layer)" @click="chooseLayer(layer.id, $event)" @keydown.enter.self="chooseLayer(layer.id, $event)" @keydown.space.self.prevent="chooseLayer(layer.id, $event)" @dragstart="startLayerDrag($event, layer.id)" @dragover.prevent="previewLayerDrop($event, layer.id)" @drop.stop.prevent="dropLayer($event, layer.id)">
             <button class="layer-delete" :aria-label="`删除${isImageLayer(layer) ? '图片' : '图形'}`" :title="`删除 ${layer.name || '未命名对象'}`" :disabled="busy" draggable="false" @click.stop="removeLayer(layer.id)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7m4-7v7" /></svg></button>
-            <div class="layer-card-header"><span class="layer-number" data-testid="layer-number" :title="`图层顺序 ${index + 1}`">{{ index + 1 }}</span><div class="thumbnail"><img v-if="isImageLayer(layer)" :src="layer.src" alt="" draggable="false" /><span v-else class="shape-thumbnail" :class="layer.kind" :style="{ borderColor: layer.color, backgroundColor: layer.fillColor ? `${layer.fillColor}40` : 'transparent' }"></span></div><div class="layer-name"><EditableName :name="layer.name" :disabled="busy" @select="chooseLayer(layer.id)" @rename="renameLayer(layer.id, $event)" @editing="setNameEditing(layer.id, $event)" /><small>{{ round(layer.width) }} × {{ round(layer.height) }} px</small></div></div>
+            <div class="layer-card-header"><span class="layer-number" data-testid="layer-number" :title="`图层顺序 ${index + 1}`">{{ index + 1 }}</span><div class="thumbnail"><ImageContent v-if="isImageLayer(layer)" :layer="layer" thumbnail /><span v-else class="shape-thumbnail" :class="layer.kind" :style="{ borderColor: layer.color, backgroundColor: layer.fillColor ? `${layer.fillColor}40` : 'transparent' }"></span></div><div class="layer-name"><EditableName :name="layer.name" :disabled="busy" @select="chooseLayer(layer.id)" @rename="renameLayer(layer.id, $event)" @editing="setNameEditing(layer.id, $event)" /><small>{{ round(layer.width) }} × {{ round(layer.height) }} px</small></div></div>
             <div class="layer-coordinates"><span>左上角 <b>{{ formatPoint(layer.x, layer.y) }}</b></span><span>中心点 <b>{{ formatPoint(layer.x + layer.width / 2, layer.y + layer.height / 2) }}</b></span><span>右下角 <b>{{ formatPoint(layer.x + layer.width, layer.y + layer.height) }}</b></span></div>
             <details v-if="isImageLayer(layer)" class="anchor-details" @pointerdown.stop @dragstart.stop.prevent>
               <summary @click.stop>锚点坐标</summary>
@@ -862,6 +901,8 @@ onBeforeUnmount(() => {
     <div v-if="busy" class="busy-indicator" role="status">正在处理图片…</div>
     <div v-if="message" class="toast" :class="{ error: isError }" role="status"><span>{{ isError ? '!' : '✓' }}</span>{{ message }}<button aria-label="关闭提示" @click="message = ''">×</button></div>
     <ColorBackgroundDialog v-if="colorDialog" :current="currentColorBackground" @close="colorDialog = null" @apply="applyColorBackground" />
+    <CropDialog v-if="cropSnapshot" :layer="cropSnapshot" @close="cropSnapshot = null" @apply="applyCrop" />
+    <AnimationDialog v-if="animationsOpen" :groups="animations" :layers="layers" :initial-id="animationInitialId" @close="animationsOpen = false" @apply="applyAnimations" />
     <PygameExportDialog v-if="exportSnapshot" :project="exportSnapshot" @close="exportSnapshot = null" @locate="locateExportIssue" @saved="pygameSaved" />
     <div v-if="confirmReplace" class="modal-backdrop" @click.self="cancelReplace">
       <section class="modal" role="dialog" aria-modal="true" aria-labelledby="replace-title"><span class="section-kicker">REPLACE BACKGROUND</span><h2 id="replace-title">替换背景？</h2><p>替换后将清空当前 {{ layers.length }} 个图层。需要保留时，请先取消并保存项目。</p><div class="modal-actions"><button class="button" autofocus @click="cancelReplace">取消</button><button class="button primary" @click="replaceBackground">替换并清空</button></div></section>

@@ -221,7 +221,7 @@ test('names, outside corner labels, shape drawing, Ctrl, and optional exported a
   await expect(page.getByTestId('layer-card').first()).toContainText('100 × 110 px')
   const saved = await downloadBytes(page, () => page.getByRole('button', { name: '保存项目', exact: false }).click())
   const project = JSON.parse(saved.toString())
-  expect(project.version).toBe(3)
+  expect(project.version).toBe(4)
   expect(project.layers[0].name).toBe('勇者')
   expect(project.layers[1].kind).toBe('rectangle')
   expect(project.layers[2].kind).toBe('ellipse')

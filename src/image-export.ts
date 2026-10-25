@@ -1,6 +1,7 @@
 import { decodeImage } from './files'
 import type { ImageLayer } from './project'
 import { assertCanvasSize } from './background'
+import { drawImageContent } from './image-processing'
 
 export function imageExportInfo(layer: ImageLayer) {
   const format = /^data:image\/(png|jpeg|webp);base64,/.exec(layer.src)?.[1]
@@ -25,7 +26,7 @@ export async function renderImageExport(layer: ImageLayer, outputMime?: 'image/p
   // A fresh alpha-enabled canvas preserves transparent padding and soft edges.
   context.imageSmoothingEnabled = true
   context.imageSmoothingQuality = 'high'
-  context.drawImage(image, 0, 0, info.width, info.height)
+  drawImageContent(context, image, layer, { x: 0, y: 0, width: info.width, height: info.height })
   const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('图片导出失败，请先缩小对象。')), info.mime, 1))
   if (blob.type !== info.mime) throw new Error(`当前环境不支持 ${info.label} 编码，无法保持原图片格式。`)
   return { blob, filename: info.filename }

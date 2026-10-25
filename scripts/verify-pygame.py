@@ -21,6 +21,12 @@ def capture(main_file, output):
 
     def flip():
         original_flip()
+        # Load every exported PNG through Pygame Zero's actual resource loader,
+        # including independent animation frames that main.py never instantiates.
+        import pgzero.loaders
+        for resource in (pathlib.Path(main_file).parent / 'images').glob('*.png'):
+            loaded = pgzero.loaders.images.load(resource.stem)
+            assert loaded.get_size() == pygame.image.load(resource).get_size()
         pygame.image.save(pygame.display.get_surface(), output)
         pygame.event.post(pygame.event.Event(pygame.QUIT))
 
@@ -77,6 +83,49 @@ def verify():
         else:
             assert list((project / 'images').iterdir()) == []
         print(f'PASS {kind}: actual Pygame Zero frame -> {screenshot}')
+
+    for kind in ['edits', 'animation']:
+        archive = root / f'pygame-runtime-{kind}.zip'
+        target = root / f'pygame-runtime-{kind}'
+        target.mkdir(exist_ok=True)
+        with zipfile.ZipFile(archive) as zipped:
+            zipped.extractall(target)
+        project = target / 'pygame_project'
+        main = project / 'main.py'
+        source = main.read_text(encoding='utf-8')
+        assert 'walk' not in source and 'def update' not in source
+        tree = ast.parse(source)
+        positions = [node.value for node in ast.walk(tree) if isinstance(node, ast.Assign) and any(isinstance(item, ast.Attribute) and item.attr == 'pos' for item in node.targets)]
+        assert len(positions) == 1
+        assert all(type(value.value) is int for value in positions[0].elts)
+        screenshot = target / 'frame.png'
+        subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve()), '--capture', str(main), str(screenshot)], check=True, timeout=15, cwd=project)
+        frame = pygame.image.load(screenshot)
+        hero = pygame.image.load(project / 'images/hero.png')
+        assert frame.get_size() == (320, 240)
+        if kind == 'edits':
+            assert hero.get_size() == (20, 14)
+            assert hero.get_at((1, 1)) == (0, 255, 0, 128)
+            assert hero.get_at((18, 12)) == (255, 0, 0, 255)
+            assert hero.get_at((1, 12)) == (0, 0, 255, 255)
+            assert tuple(value.value for value in positions[0].elts) == (46, 46)
+            top_left = (36, 39)
+        else:
+            assert hero.get_size() == (40, 24)
+            top_left = (20, 31)
+            for index in range(1, 4):
+                image = pygame.image.load(project / f'images/walk_{index:03}.png')
+                assert image.get_size() == (43, 25)
+            green = pygame.image.load(project / 'images/walk_003.png')
+            assert green.get_at((1, 2)) == (0, 255, 0, 255)
+            assert green.get_at((40, 21)) == (0, 255, 0, 255)
+            assert green.get_at((41, 21)).a == 0
+            assert green.get_at((40, 22)).a == 0
+        expected = pygame.Surface((320, 240))
+        expected.fill('#203040')
+        expected.blit(hero, top_left)
+        assert pygame.image.tobytes(frame, 'RGB') == pygame.image.tobytes(expected, 'RGB')
+        print(f'PASS {kind}: transformed scene and all PNG resources -> {screenshot}')
 
 
 if __name__ == '__main__':
