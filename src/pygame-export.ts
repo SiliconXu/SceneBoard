@@ -7,8 +7,33 @@ import { isImageLayer, type Background, type Layer, type Project, type Animation
 export interface ProjectFile { path: string; bytes: Uint8Array }
 export { resourceName } from './resource-names'
 import { deviceName, resourceName } from './resource-names'
-import { analyzeResources, buildAnimationFiles, type ResourceIssue } from './animation'
+import { analyzeResources, animationFrameName, buildAnimationFiles, type ResourceIssue } from './animation'
 export type NameIssue = ResourceIssue
+
+function animationExample(groups: AnimationGroup[]): string[] {
+  if (!groups.length) return []
+  const lines = ['# 动画素材：帧顺序与 FPS 来自编辑器', '_animation_frames = {']
+  for (const group of groups) {
+    const frames = group.frames.map((_, index) => `'${animationFrameName(group, index)}'`)
+    lines.push(`    '${group.name}': [${frames.join(', ')}],`)
+  }
+  lines.push('}', '_animation_fps = {')
+  for (const group of groups) lines.push(`    '${group.name}': ${group.fps},`)
+  lines.push('}', '',
+    '# 动画播放示例：默认不启用，不会自动创建角色或改变场景。',
+    '# 将 YOUR_ACTOR 替换为已有角色变量，删除暂不播放的组，再取消下面代码的注释。',
+    '# 同一角色通常只绑定一组；没有角色时需先创建 Actor，并在 draw() 中绘制。',
+    '# 如果已有 update(dt)，请合并函数内容，保持只有一个 update。',
+    '# 动画使用导出帧的统一原始尺寸，可能与场景图片的缩放尺寸不同。')
+  const example = ['_animation_targets = {', ...groups.map(group => `    '${group.name}': YOUR_ACTOR,`),
+    '}', '_animation_time = 0.0', '', 'def update(dt):',
+    '    global _animation_time', '    _animation_time += dt',
+    '    for _name, _actor in _animation_targets.items():',
+    '        _frames = _animation_frames[_name]',
+    '        _actor.image = _frames[int(_animation_time * _animation_fps[_name]) % len(_frames)]']
+  lines.push(...example.map(line => `# ${line}`.trimEnd()), '# 动画播放示例结束', '')
+  return lines
+}
 
 export function analyzePygameProject(background: Background, layers: Layer[], animations: AnimationGroup[] = []) {
   const images = layers.filter(isImageLayer)
@@ -33,7 +58,7 @@ export function analyzePygameProject(background: Background, layers: Layer[], an
     }
     lines.push('# 绘制场景', 'def draw():', background.kind === 'color' ? `    screen.fill('${background.color}')` : "    screen.blit('background', (0, 0))")
     for (const layer of images) lines.push(`    ${resourceName(layer.name)}.draw()`)
-    lines.push('', '', 'pgzrun.go()', '')
+    lines.push('', '', ...animationExample(animations), 'pgzrun.go()', '')
     code = lines.join('\n')
   }
   return { issues, code, imageCount: images.length + animations.reduce((count, group) => count + group.frames.length, 0) + (background.kind === 'color' ? 0 : 1), shapeCount: layers.length - images.length }

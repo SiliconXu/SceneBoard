@@ -26,11 +26,36 @@ describe('independent animation assets', () => {
     expect(analyzeResources([{ ...layer, name: 'walk_001.webp' }], [group]).map(issue => [issue.id, issue.target])).toEqual([['hero', undefined], ['g1', 'animation']])
     expect(analyzeResources([], [group, { ...group, id: 'g2' }]).map(issue => issue.id)).toEqual(['g1', 'g2'])
   })
-  it('counts animation assets while generating only scene actors and integer coordinates', () => {
+  it('includes frame order and FPS with opt-in playback while generating only scene actors', () => {
     const result = analyzePygameProject(background, [layer], [group])
     expect(result.issues).toEqual([]); expect(result.imageCount).toBe(3)
     expect(result.code).toContain("hero = Actor('hero')")
-    expect(result.code).not.toContain('walk'); expect(result.code).not.toContain('update')
+    expect(result.code).toContain("'walk': ['walk_001', 'walk_002']")
+    expect(result.code).toContain("'walk': 10")
+    expect(result.code).toContain("#     'walk': YOUR_ACTOR,")
+    expect(result.code).toContain('# def update(dt):')
+    expect(result.code).not.toMatch(/^def update|^walk\s*=|Actor\('walk/m)
+  })
+  it('supports independent FPS and single-frame groups without introducing actor variable collisions', () => {
+    const result = analyzePygameProject(background, [{ ...layer, name: 'walk' }], [
+      { ...group, fps: 1 }, { ...group, id: 'idle', name: 'idle', fps: 60, frames: [frame] },
+    ])
+    expect(result.issues).toEqual([])
+    expect(result.code).toContain("walk = Actor('walk')")
+    expect(result.code).toContain("'walk': 1,")
+    expect(result.code).toContain("'idle': ['idle_001']")
+    expect(result.code).toContain("'idle': 60,")
+    expect(result.code.match(/# def update\(dt\):/g)).toHaveLength(1)
+    expect(result.code).toContain('_frames[int(_animation_time * _animation_fps[_name]) % len(_frames)]')
+    expect(result.code).not.toMatch(/^walk\s*=\s*\[|^idle\s*=|^def update/m)
+  })
+  it('uses the exported numbering even beyond 999 frames and works without a scene actor', () => {
+    const large = { ...group, frames: Array.from({ length: 1000 }, () => frame) }
+    const result = analyzePygameProject(background, [], [large])
+    expect(result.code).toContain("'walk_0001', 'walk_0002'")
+    expect(result.code).toContain("'walk_1000']")
+    expect(result.code).not.toContain('Actor(')
+    expect(result.imageCount).toBe(1000)
   })
   it('keeps shape names out of independent animation image export validation', () => {
     expect(analyzeResources([{ id: 'shape', kind: 'rectangle', name: '矩形 1', color: '#ffffff', x: 0, y: 0, width: 10, height: 10 }], [group])).toEqual([])

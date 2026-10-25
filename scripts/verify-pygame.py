@@ -11,6 +11,45 @@ import sys
 import zipfile
 
 
+def verify_animation_example(main_file):
+    """Enable exactly the commented sample shipped to users, with a real Actor."""
+    import pygame
+    import pgzero.loaders
+    from pgzero.builtins import Actor
+    import pgzrun
+
+    pgzero.loaders.set_root(str(main_file))
+    pygame.init()
+    pygame.display.set_mode((320, 240))
+    source = main_file.read_text(encoding='utf-8')
+    original_go = pgzrun.go
+    pgzrun.go = lambda: None
+    try:
+        namespace = {'Actor': Actor, 'Rect': pygame.Rect}
+        exec(compile(source, str(main_file), 'exec'), namespace)
+        assert 'update' not in namespace and '_animation_targets' not in namespace
+        assert sum(isinstance(value, Actor) for value in namespace.values()) == 1
+        start = source.index('# _animation_targets = {')
+        end = source.index('# 动画播放示例结束', start)
+        example = '\n'.join(line[2:] if line.startswith('# ') else '' for line in source[start:end].splitlines())
+        exec(compile(example.replace('YOUR_ACTOR', 'hero'), str(main_file), 'exec'), namespace)
+        hero = namespace['hero']
+        position = hero.pos
+        frames = namespace['_animation_frames']['walk']
+        fps = namespace['_animation_fps']['walk']
+        assert fps == 12 and len(frames) == 3
+        elapsed = 0.0
+        for dt in [0, 1 / fps + 0.001, 1 / fps, 1 / fps, 2.75]:
+            elapsed += dt
+            namespace['update'](dt)
+            assert hero.image == frames[int(elapsed * fps) % len(frames)]
+            assert hero.pos == position
+            assert hero.width == 43 and hero.height == 25
+        print('PASS animation example: disabled by default; enabled FPS, frame order, loop and position verified')
+    finally:
+        pgzrun.go = original_go
+
+
 def capture(main_file, output):
     os.environ['SDL_VIDEODRIVER'] = 'dummy'
     os.environ['SDL_AUDIODRIVER'] = 'dummy'
@@ -109,8 +148,10 @@ def verify():
         project = target / 'pygame_project'
         main = project / 'main.py'
         source = main.read_text(encoding='utf-8')
-        assert 'walk' not in source and 'def update' not in source
         tree = ast.parse(source)
+        assert not any(isinstance(node, ast.FunctionDef) and node.name == 'update' for node in tree.body)
+        if kind == 'edits':
+            assert '_animation_frames' not in source
         positions = [node.value for node in ast.walk(tree) if isinstance(node, ast.Assign) and any(isinstance(item, ast.Attribute) and item.attr == 'pos' for item in node.targets)]
         assert len(positions) == 1
         assert all(type(value.value) is int for value in positions[0].elts)
@@ -142,6 +183,8 @@ def verify():
         expected.blit(hero, top_left)
         assert pygame.image.tobytes(frame, 'RGB') == pygame.image.tobytes(expected, 'RGB')
         print(f'PASS {kind}: transformed scene and all PNG resources -> {screenshot}')
+        if kind == 'animation':
+            verify_animation_example(main)
 
 
 if __name__ == '__main__':

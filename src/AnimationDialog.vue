@@ -122,7 +122,7 @@ function apply() { if (!busy.value && !structuralError.value) emit('apply', JSON
   <div class="modal-backdrop" @click.self="close">
     <section ref="dialog" class="modal animation-dialog" role="dialog" aria-modal="true" aria-labelledby="animation-title" :aria-busy="busy" tabindex="-1">
       <h2 id="animation-title">动画素材</h2>
-      <p>独立整理帧图片，不加入场景。不同尺寸居中补透明画布，播放逻辑由学生编写。</p>
+      <p>独立整理帧图片，不加入场景。不同尺寸居中补透明画布；项目导出附带播放示例，在 Python 中指定角色后启用。</p>
       <div class="animation-layout">
         <nav class="animation-groups" aria-label="动画组"><button v-for="group in groups" :key="group.id" :aria-pressed="activeId === group.id" :disabled="busy" @click="activeId = group.id">{{ group.name || '未命名组' }}<small>{{ group.frames.length }} 帧</small></button><button class="button" :disabled="busy" @click="addGroup">＋ 新增组</button></nav>
         <div v-if="active" class="animation-editor">

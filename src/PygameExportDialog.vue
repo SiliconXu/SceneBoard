@@ -33,7 +33,7 @@ async function save() {
       <p>生成场景显示代码和 Rect 碰撞区域，碰撞处理由学生编写。运行前请安装 Python 和 Pygame Zero，可使用 python main.py 启动。</p>
       <label class="project-name">项目名称<input ref="nameInput" v-model="name" aria-label="项目名称" maxlength="100" :disabled="busy" /></label>
       <p>main.py · images/ · {{ preview.imageCount }} 张图片</p>
-      <p v-if="project.animations?.length">含 {{ project.animations.length }} 组动画帧，仅导出图片；main.py 不创建动画角色或播放逻辑。</p>
+      <p v-if="project.animations?.length">含 {{ project.animations.length }} 组动画帧、帧列表、FPS 和带注释的播放示例。将 YOUR_ACTOR 改为角色变量并取消示例注释后启用；默认不自动播放。</p>
       <p v-if="project.background.kind === 'color'">纯色背景直接填充 {{ project.background.color }}，不生成 background.png。</p>
       <p v-if="preview.shapeCount">{{ preview.shapeCount }} 个图形生成 Rect 碰撞区域，不生成图片、不绘制；圆形／椭圆使用外接矩形。名称、坐标标签与选框不绘制。</p>
       <div v-if="preview.issues.length" class="name-issues" role="alert">

@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { writeFile } from 'node:fs/promises'
 import { unzipSync, strFromU8 } from 'fflate'
-import { source, openScene, bytes, save, pixels, projectZip } from './round3-utils'
+import { source, openScene, bytes, save, pixels } from './round3-utils'
 
 async function frames(page: Page) {
   const sources = await page.evaluate(() => {
@@ -58,12 +58,24 @@ test('draft cancellation, atomic imports, ordering, normalized pixels and both e
   expect(saved.animations[0]).toMatchObject({ name: 'walk', fps: 12 })
   expect(saved.animations[0].frames.map((frame: { name: string }) => frame.name)).toEqual(['original-2.png', 'original-0.png', 'original-1.png'])
   expect(saved.layers).toHaveLength(2)
-  const zipBytes = await projectZip(page), project = unzipSync(zipBytes)
+  await page.getByRole('button', { name: '导出', exact: true }).click()
+  await page.getByRole('button', { name: '导出 Pygame Zero 项目…' }).click()
+  const exportDialog = page.getByRole('dialog', { name: '导出 Pygame Zero 项目' })
+  await expect(exportDialog).toContainText('将 YOUR_ACTOR 改为角色变量')
+  const previewCode = await exportDialog.getByLabel('Python 代码预览').innerText()
+  await expect(exportDialog.getByRole('button', { name: '下载项目 ZIP' })).toBeInViewport()
+  await page.screenshot({ path: 'test-results/animation-export-example.png', fullPage: true })
+  const zipBytes = await bytes(page, () => exportDialog.getByRole('button', { name: '下载项目 ZIP' }).click()), project = unzipSync(zipBytes)
   for (let i = 1; i <= 3; i++) {
     const name = `walk_00${i}.png`
     expect(project[`pygame_project/images/${name}`]).toEqual(groupZip[`walk/images/${name}`])
   }
-  expect(strFromU8(project['pygame_project/main.py']!)).not.toContain('walk')
+  const code = strFromU8(project['pygame_project/main.py']!)
+  expect(code.trimEnd()).toBe(previewCode.trimEnd())
+  expect(code).toContain("'walk': ['walk_001', 'walk_002', 'walk_003']")
+  expect(code).toContain("'walk': 12")
+  expect(code).toContain("#     'walk': YOUR_ACTOR,")
+  expect(code).not.toMatch(/^def update|Actor\('walk/m)
   await writeFile('test-results/pygame-runtime-animation.zip', zipBytes)
   await page.getByTestId('project-input').setInputFiles({ name: 'saved.frame.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(saved)) })
   dialog = await openManager(page)
@@ -162,5 +174,14 @@ for (const viewport of [{ width: 1024, height: 768 }, { width: 1280, height: 900
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     await page.keyboard.press('Escape')
     await expect(page.getByTestId('stage')).toHaveCSS('background-image', 'none')
+    await page.getByRole('button', { name: '导出', exact: true }).click()
+    await page.getByRole('button', { name: '导出 Pygame Zero 项目…' }).click()
+    const exportDialog = page.getByRole('dialog', { name: '导出 Pygame Zero 项目' })
+    const preview = exportDialog.getByLabel('Python 代码预览')
+    await expect(preview).toContainText('# def update(dt):')
+    await preview.evaluate(element => { element.scrollTop = element.scrollHeight })
+    await expect(exportDialog.getByRole('button', { name: '下载项目 ZIP' })).toBeInViewport()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.screenshot({ path: `test-results/animation-export-${viewport.width}.png`, fullPage: true })
   })
 }
