@@ -20,6 +20,7 @@ import logoUrl from './logo.png'
 import ColorBackgroundDialog from './ColorBackgroundDialog.vue'
 import PygameExportDialog from './PygameExportDialog.vue'
 import type { ColorBackground } from './project'
+import { cloneSnapshot, EditHistory, type HistorySnapshot } from './history'
 
 const background = ref<Background | null>(null)
 const showBackgroundMenu = ref(false)
@@ -40,6 +41,7 @@ const selectedLayers = computed(() => layers.value.filter(layer => selectedIds.v
 const selected = computed(() => selectedLayers.value.length === 1 ? selectedLayers.value[0] : undefined)
 const selectionBox = computed(() => selectionBounds(selectedLayers.value))
 function setSelection(ids: string[], active: string | null = ids.at(-1) ?? null) {
+  flushNudge()
   selectedIds.value = ids
   activeId.value = active && ids.includes(active) ? active : ids.at(-1) ?? null
   guides.value = null; guideMode.value = null
@@ -65,26 +67,31 @@ function updateSelectionGuides() {
 }
 function editSelection(field: RectField, value: number, anchor: PositionAnchor, proportional: boolean) {
   if (!background.value || !selectionBox.value || busy.value) return
+  const bounds = background.value, box = selectionBox.value
   endGesture()
-  try {
-    if (selected.value) {
-      const result = editRect(selected.value, field, value, background.value, anchor, proportional)
-      applyRects([{ ...selected.value, ...result }])
-      const actual = field === 'x' || field === 'y' ? positionAt(result, anchor)[field] : result[field]
-      if (Math.abs(actual - value) > 1e-7) notify('已按画布边界限制，显示实际数值')
-    } else if (field === 'x' || field === 'y') {
-      const point = positionAt(selectionBox.value, anchor)
-      const delta = { x: field === 'x' ? value - point.x : 0, y: field === 'y' ? value - point.y : 0 }
-      applyRects(moveSelection(selectedLayers.value, delta, background.value))
-      if (Math.abs(positionAt(selectionBox.value, anchor)[field] - value) > 1e-7) notify('已按画布边界限制，显示实际数值')
-    }
-  } catch (error) { notify(errorText(error), true) }
+  editProject('修改位置与尺寸', () => {
+    try {
+      if (selected.value) {
+        const result = editRect(selected.value, field, value, bounds, anchor, proportional)
+        applyRects([{ ...selected.value, ...result }])
+        const actual = field === 'x' || field === 'y' ? positionAt(result, anchor)[field] : result[field]
+        if (Math.abs(actual - value) > 1e-7) notify('已按画布边界限制，显示实际数值')
+      } else if (field === 'x' || field === 'y') {
+        const point = positionAt(box, anchor)
+        const delta = { x: field === 'x' ? value - point.x : 0, y: field === 'y' ? value - point.y : 0 }
+        applyRects(moveSelection(selectedLayers.value, delta, bounds))
+        if (Math.abs(positionAt(selectionBox.value!, anchor)[field] - value) > 1e-7) notify('已按画布边界限制，显示实际数值')
+      }
+    } catch (error) { notify(errorText(error), true) }
+  })
 }
-function arrangeSelection(alignment: Alignment) { if (!busy.value) { endGesture(); applyRects(alignSelection(selectedLayers.value, alignment)) } }
+function arrangeSelection(alignment: Alignment) { if (!busy.value) editProject('对齐对象', () => applyRects(alignSelection(selectedLayers.value, alignment))) }
 function flipSelection(axis: 'flipX' | 'flipY') {
   if (busy.value) return
   endGesture()
-  for (const layer of selectedLayers.value.filter(isImageLayer)) { layer[axis] = !layer[axis]; dirty.value = true }
+  editProject('翻转图片', () => {
+    for (const layer of selectedLayers.value.filter(isImageLayer)) layer[axis] = !layer[axis]
+  })
 }
 function openCrop() {
   if (!selectedImage.value || busy.value) return
@@ -93,7 +100,7 @@ function openCrop() {
 }
 function applyCrop(result: ImageLayer) {
   const layer = layers.value.find(item => item.id === result.id)
-  if (layer && isImageLayer(layer)) { Object.assign(layer, result); dirty.value = true; guides.value = null; guideMode.value = null }
+  if (layer && isImageLayer(layer)) editProject('裁剪透明留白', () => { Object.assign(layer, result); guides.value = null; guideMode.value = null })
   cropSnapshot.value = null
 }
 function openAnimations(id?: string) {
@@ -102,14 +109,14 @@ function openAnimations(id?: string) {
   animationInitialId.value = id; animationsOpen.value = true
 }
 function applyAnimations(groups: AnimationGroup[]) {
-  if (JSON.stringify(groups) !== JSON.stringify(animations.value)) { animations.value = groups; dirty.value = true }
+  editProject('修改动画素材', () => { animations.value = groups })
   animationsOpen.value = false
 }
 function distribute(axis: Axis) {
   if (busy.value) return
   endGesture()
   const result = distributeSelection(selectedLayers.value, axis)
-  if (result) applyRects(result)
+  if (result) editProject('等间距分布', () => applyRects(result))
 }
 const bgInput = ref<HTMLInputElement>()
 const layerInput = ref<HTMLInputElement>()
@@ -175,6 +182,49 @@ let toastTimer: ReturnType<typeof setTimeout> | undefined
 const corners: Corner[] = ['nw', 'ne', 'sw', 'se']
 const cornerLabels = { nw: '左上角', ne: '右上角', sw: '左下角', se: '右下角' }
 const stageStyle = computed(() => background.value ? { width: `${background.value.width * scale.value}px`, height: `${background.value.height * scale.value}px`, transform: `translate(${pan.value.x}px, ${pan.value.y}px)`, backgroundColor: background.value.kind === 'color' ? background.value.color : undefined, backgroundImage: background.value.kind === 'color' ? 'none' : undefined } : {})
+
+function captureHistory(): HistorySnapshot {
+  return cloneSnapshot({ background: background.value, layers: layers.value, animations: animations.value, selectedIds: selectedIds.value, activeId: activeId.value, addedImageCount })
+}
+const history = new EditHistory(captureHistory())
+const historyRevision = ref(0)
+const canUndo = computed(() => { historyRevision.value; return history.canUndo })
+const canRedo = computed(() => { historyRevision.value; return history.canRedo })
+const undoTitle = computed(() => { historyRevision.value; return `撤销${history.undoLabel ? `：${history.undoLabel}` : ''}（Ctrl+Z / Command+Z）` })
+const redoTitle = computed(() => { historyRevision.value; return `重做${history.redoLabel ? `：${history.redoLabel}` : ''}（Ctrl+Y / Ctrl+Shift+Z / Command+Shift+Z）` })
+let nudge: { before: HistorySnapshot; keys: Set<string> } | null = null
+function syncHistory() { historyRevision.value++; dirty.value = history.isDirty(captureHistory()) }
+function commitEdit(before: HistorySnapshot, label: string) { history.commit(before, captureHistory(), label); syncHistory() }
+function flushNudge() {
+  const current = nudge
+  nudge = null
+  if (current) commitEdit(current.before, '微调位置')
+}
+function editProject(label: string, action: () => void) {
+  endGesture(); flushNudge()
+  const before = captureHistory()
+  try { action() } finally { commitEdit(before, label) }
+}
+async function restoreHistory(redo = false) {
+  if (busy.value || modalOpen.value) return
+  commitFocusedInput()
+  cancelDrawing(); endGesture(); flushNudge(); endMarquee(); endPan(); endLayerDrag(); closeObjectMenu()
+  const snapshot = redo ? history.redo() : history.undo()
+  if (!snapshot) return
+  const dimensionsChanged = background.value?.width !== snapshot.background?.width || background.value?.height !== snapshot.background?.height
+  background.value = snapshot.background
+  layers.value = snapshot.layers
+  animations.value = snapshot.animations
+  addedImageCount = snapshot.addedImageCount
+  tool.value = 'select'; spacePressed.value = false
+  setSelection(snapshot.selectedIds.filter(id => layers.value.some(layer => layer.id === id)), snapshot.activeId)
+  showExport.value = false; showBackgroundMenu.value = false
+  syncHistory()
+  await nextTick()
+  if (dimensionsChanged) fitStage(true)
+  else constrainPan()
+  if (activeId.value) void revealLayerCard(activeId.value)
+}
 
 function notify(text: string, error = false) {
   message.value = text
@@ -267,11 +317,12 @@ async function applyBackground(bg: Background) {
   endGesture()
   endMarquee()
   tool.value = 'select'
-  background.value = bg
-  addedImageCount = 0
-  layers.value = []
-  selectedId.value = null
-  dirty.value = true
+  editProject(background.value ? '替换背景' : '创建背景', () => {
+    background.value = bg
+    addedImageCount = 0
+    layers.value = []
+    selectedId.value = null
+  })
   await nextTick()
   fitStage(true)
 }
@@ -301,7 +352,7 @@ function openColorDialog(mode: 'create' | 'edit') {
 }
 async function applyColorBackground(bg: ColorBackground) {
   if (colorDialog.value === 'edit' && background.value?.kind === 'color') {
-    if (background.value.color !== bg.color) { background.value = bg; dirty.value = true }
+    editProject('修改背景颜色', () => { background.value = bg })
   } else if (background.value) { pendingBackground = bg; confirmReplace.value = true }
   else await applyBackground(bg)
   colorDialog.value = null
@@ -341,10 +392,11 @@ async function addLayers(event: Event) {
       kind: 'image', id: crypto.randomUUID(), name: image.name, src: image.src,
       ...moveRect(fitImage(image, background.value!), { x: (addedImageCount + index) * 20, y: (addedImageCount + index) * 20 }, background.value!),
     }))
-    addedImageCount += additions.length
-    layers.value.push(...additions)
-    selectedId.value = additions.at(-1)!.id
-    dirty.value = true
+    editProject('添加图片', () => {
+      addedImageCount += additions.length
+      layers.value.push(...additions)
+      selectedId.value = additions.at(-1)!.id
+    })
     notify(`已添加 ${additions.length} 张图片`)
   } catch (error) { notify(errorText(error), true) }
   finally { busy.value = false }
@@ -355,20 +407,22 @@ function removeLayer(id: string) {
   const index = layers.value.findIndex(layer => layer.id === id)
   if (index < 0) return
   endGesture()
-  layers.value.splice(index, 1)
-  if (isSelected(id)) {
-    const remaining = selectedIds.value.filter(item => item !== id)
-    const fallback = layers.value[Math.min(index, layers.value.length - 1)]?.id
-    setSelection(remaining.length ? remaining : fallback ? [fallback] : [])
-  }
-  dirty.value = true
+  editProject('删除对象', () => {
+    layers.value.splice(index, 1)
+    if (isSelected(id)) {
+      const remaining = selectedIds.value.filter(item => item !== id)
+      const fallback = layers.value[Math.min(index, layers.value.length - 1)]?.id
+      setSelection(remaining.length ? remaining : fallback ? [fallback] : [])
+    }
+  })
 }
 function removeSelected() {
   if (busy.value || !selectedLayers.value.length) return
   endGesture()
-  layers.value = layers.value.filter(layer => !isSelected(layer.id))
-  setSelection([])
-  dirty.value = true
+  editProject('删除所选对象', () => {
+    layers.value = layers.value.filter(layer => !isSelected(layer.id))
+    setSelection([])
+  })
 }
 
 function copyLayer(cut = false) {
@@ -385,10 +439,11 @@ function pasteLayer() {
   const offset = 20 * (clipboard.pasteCount + (clipboard.cut ? 0 : 1))
   const additions = pasteSelection(clipboard.layers, background.value, offset).map(layer => ({ ...layer, id: crypto.randomUUID() }))
   selectTool('select'); endLayerDrag()
-  layers.value.push(...additions)
-  setSelection(additions.map(layer => layer.id))
-  clipboard.pasteCount++
-  dirty.value = true
+  editProject('粘贴对象', () => {
+    layers.value.push(...additions)
+    setSelection(additions.map(layer => layer.id))
+    clipboard.pasteCount++
+  })
   notify('图层已粘贴')
 }
 
@@ -409,8 +464,7 @@ function endLayerDrag() { draggedLayerId.value = null; dropTarget.value = null }
 function dropLayer(event: DragEvent, id: string) {
   previewLayerDrop(event, id)
   if (draggedLayerId.value && dropTarget.value && !busy.value) {
-    layers.value = reorderLayers(layers.value, draggedLayerId.value, id, dropTarget.value.before)
-    dirty.value = true
+    editProject('调整图层顺序', () => { layers.value = reorderLayers(layers.value, draggedLayerId.value!, id, dropTarget.value!.before) })
   }
   endLayerDrag()
 }
@@ -418,15 +472,14 @@ function dropLayer(event: DragEvent, id: string) {
 function renameLayer(id: string, name: string) {
   const layer = layers.value.find(item => item.id === id)
   if (!layer || busy.value) return
-  layer.name = name
-  dirty.value = true
+  editProject('修改名称', () => { layer.name = name })
 }
 function setNameEditing(id: string, active: boolean) {
   if (active) editingLayerId.value = id
   else if (editingLayerId.value === id) editingLayerId.value = null
 }
 
-interface Gesture { id: string; pointerId: number; target: HTMLElement; start: Point; last: Point; rect: Rect; rects: Layer[]; corner?: Corner; scale: number; origin: Point; collapse: boolean; moved: boolean }
+interface Gesture { id: string; pointerId: number; target: HTMLElement; start: Point; last: Point; rect: Rect; rects: Layer[]; before: HistorySnapshot; corner?: Corner; scale: number; origin: Point; collapse: boolean; moved: boolean }
 let gesture: Gesture | null = null
 function selectCanvasLayer(id: string, event?: KeyboardEvent) {
   if (busy.value) return
@@ -452,6 +505,7 @@ function beginGesture(event: PointerEvent, layer: Layer, corner?: Corner) {
   if (tool.value !== 'select') { beginDrawing(event); return }
   if (busy.value || event.button !== 0 || !stage.value || gesture) return
   commitFocusedInput()
+  flushNudge()
   guides.value = null
   guideMode.value = null
   event.preventDefault()
@@ -471,7 +525,7 @@ function beginGesture(event: PointerEvent, layer: Layer, corner?: Corner) {
   const handleCorner = corner ? { x: corner.endsWith('e') ? layer.x + layer.width : layer.x, y: corner.startsWith('s') ? layer.y + layer.height : layer.y } : point
   // Account for clicking slightly off the exact corner, preventing a jump at drag start.
   shiftPressed.value = event.shiftKey; ctrlPressed.value = event.ctrlKey
-  gesture = { rects: selectedLayers.value.map(item => ({ ...item })), collapse, moved: false, id: layer.id, pointerId: event.pointerId, target, start: { x: point.x - handleCorner.x, y: point.y - handleCorner.y }, last: point, rect: { x: layer.x, y: layer.y, width: layer.width, height: layer.height }, corner, scale: scale.value, origin }
+  gesture = { before: captureHistory(), rects: selectedLayers.value.map(item => ({ ...item })), collapse, moved: false, id: layer.id, pointerId: event.pointerId, target, start: { x: point.x - handleCorner.x, y: point.y - handleCorner.y }, last: point, rect: { x: layer.x, y: layer.y, width: layer.width, height: layer.height }, corner, scale: scale.value, origin }
   if (!corner) gesture.start = point
   target.setPointerCapture(event.pointerId)
 }
@@ -522,6 +576,7 @@ function endGesture() {
   guideMode.value = null
   const current = gesture
   gesture = null
+  if (current) commitEdit(current.before, current.corner ? '缩放对象' : '移动对象')
   if (current?.target.hasPointerCapture(current.pointerId)) current.target.releasePointerCapture(current.pointerId)
 }
 
@@ -568,7 +623,7 @@ interface Drawing { pointerId: number; target: HTMLElement; start: Point; last: 
 let drawing: Drawing | null = null
 
 function selectTool(value: typeof tool.value) {
-  cancelDrawing(); endGesture(); endMarquee()
+  cancelDrawing(); endGesture(); flushNudge(); endMarquee()
   tool.value = value
   if (value !== 'select') selectedId.value = null
 }
@@ -615,10 +670,11 @@ function finishDrawing(event: PointerEvent) {
   const shape = draft.value
   cancelDrawing()
   if (!shape || shape.width < 1 || shape.height < 1) return
-  shape.name = nextShapeName(shape.kind, layers.value, animations.value)
-  layers.value.push(shape)
-  selectedId.value = shape.id
-  dirty.value = true
+  editProject('绘制图形', () => {
+    shape.name = nextShapeName(shape.kind, layers.value, animations.value)
+    layers.value.push(shape)
+    selectedId.value = shape.id
+  })
   tool.value = 'select'
 }
 
@@ -626,10 +682,12 @@ function setShapeColor(property: 'color' | 'fillColor', value: string | null) {
   if (busy.value) return
   if (property === 'color' && value) defaultBorder.value = value
   if (property === 'fillColor') defaultFill.value = value
-  if (selectedShape.value) {
-    if (property === 'color' && value) selectedShape.value.color = value
-    if (property === 'fillColor') selectedShape.value.fillColor = value
-    dirty.value = true
+  const shape = selectedShape.value
+  if (shape) {
+    editProject('修改图形颜色', () => {
+      if (property === 'color' && value) shape.color = value
+      if (property === 'fillColor') shape.fillColor = value
+    })
   }
   if (draft.value) {
     if (property === 'color' && value) draft.value.color = value
@@ -707,12 +765,14 @@ async function copyCoordinates() {
 
 async function saveProject() {
   if (!background.value || busy.value) return
+  commitFocusedInput(); endGesture(); flushNudge()
+  const saved = captureHistory()
   const bg: Background = background.value.kind === 'color' ? { ...background.value } : { ...background.value, kind: 'image' }
   const project: Project = { version: 4, background: bg, layers: layers.value, animations: animations.value }
   busy.value = true
   try {
     if (await downloadJson(project, `${fileStem()}.frame.json`)) {
-      dirty.value = false
+      history.markSaved(saved); syncHistory()
       notify('项目已保存，包含所有图片和精确坐标')
     }
   } catch (error) { notify(errorText(error), true) }
@@ -742,13 +802,13 @@ async function openProject(event: Event) {
       if (image.naturalWidth !== frame.width || image.naturalHeight !== frame.height) throw new Error('动画帧尺寸与图片不一致。')
     })))
     if (dirty.value && background.value && !window.confirm('当前项目有未保存的更改。打开新项目会替换当前内容，是否继续？')) return
-    cancelDrawing(); endGesture(); endMarquee(); endPan(); tool.value = 'select'
+    cancelDrawing(); endGesture(); flushNudge(); endMarquee(); endPan(); tool.value = 'select'
     background.value = project.background
     layers.value = project.layers
     animations.value = project.animations ?? []
     addedImageCount = project.layers.filter(isImageLayer).length
     selectedId.value = project.layers.at(-1)?.id ?? null
-    dirty.value = false
+    history.reset(captureHistory()); syncHistory()
     await nextTick()
     fitStage(true)
     notify('项目已恢复')
@@ -785,14 +845,21 @@ function onKeydown(event: KeyboardEvent) {
   if (confirmReplace.value) { if (event.key === 'Escape') cancelReplace(); return }
   const target = event.target as HTMLElement
   if (event.isComposing || target?.isContentEditable || target?.closest('input, textarea, select')) return
+  const key = event.key.toLowerCase()
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && (key === 'z' || key === 'y')) {
+    event.preventDefault()
+    if (!event.repeat) void restoreHistory(key === 'y' || event.shiftKey)
+    return
+  }
   if (event.key === 'Escape') { cancelDrawing(); endGesture(); endMarquee(); endPan(); tool.value = 'select'; selectedId.value = null; showExport.value = false; showBackgroundMenu.value = false }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && !event.altKey && background.value && !busy.value) {
     event.preventDefault(); selectTool('select'); setSelection(layers.value.map(layer => layer.id)); return
   }
-  const key = event.key.toLowerCase()
   if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && selectedLayers.value.length && background.value && !busy.value && tool.value === 'select' && !event.ctrlKey && !event.metaKey && !event.altKey) {
     event.preventDefault()
     endGesture()
+    if (!nudge) nudge = { before: captureHistory(), keys: new Set() }
+    nudge.keys.add(event.key)
     const step = event.shiftKey ? 10 : 1
     applyRects(moveSelection(selectedLayers.value, { x: event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0, y: event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0 }, background.value))
     updateSelectionGuides()
@@ -819,10 +886,11 @@ function onKeydown(event: KeyboardEvent) {
   if ((event.key === 'Delete' || event.key === 'Backspace') && selectedLayers.value.length) { event.preventDefault(); removeSelected() }
 }
 function onKeyup(event: KeyboardEvent) {
+  if (nudge?.keys.delete(event.key) && !nudge.keys.size) flushNudge()
   shiftPressed.value = event.shiftKey; ctrlPressed.value = event.ctrlKey
   if (event.key === 'Shift' || event.key === 'Control') { refreshDrawing(); refreshResize() }
 }
-function onBlur() { closeObjectMenu(); shiftPressed.value = false; ctrlPressed.value = false; spacePressed.value = false; cancelDrawing(); endGesture(); endMarquee(); endPan() }
+function onBlur() { closeObjectMenu(); shiftPressed.value = false; ctrlPressed.value = false; spacePressed.value = false; cancelDrawing(); endGesture(); flushNudge(); endMarquee(); endPan() }
 function beforeUnload(event: BeforeUnloadEvent) { if (dirty.value && background.value) { event.preventDefault(); event.returnValue = '' } }
 function closeExport(event: MouseEvent) {
   if (!(event.target as HTMLElement).closest('.export-wrap')) showExport.value = false
@@ -891,7 +959,7 @@ onBeforeUnmount(() => {
 
     <main class="main-layout" :inert="modalOpen">
       <section class="editor-panel" aria-label="图片编辑区">
-        <div class="editor-heading"><div><span class="section-kicker">WORKSPACE</span><h1>{{ background ? background.name : '让每个位置，都有坐标。' }}</h1></div><span class="local-badge"><i></i>本地处理</span></div>
+        <div class="editor-heading"><div><span class="section-kicker">WORKSPACE</span><h1>{{ background ? background.name : '让每个位置，都有坐标。' }}</h1></div><div class="workspace-actions"><div class="history-controls" role="group" aria-label="编辑历史"><button aria-label="撤销" aria-keyshortcuts="Control+Z Meta+Z" :title="undoTitle" :disabled="busy || modalOpen || !canUndo" @click="restoreHistory()">↶</button><button aria-label="重做" aria-keyshortcuts="Control+Y Control+Shift+Z Meta+Shift+Z" :title="redoTitle" :disabled="busy || modalOpen || !canRedo" @click="restoreHistory(true)">↷</button></div><span class="local-badge"><i></i>本地处理</span></div></div>
         <div ref="workspace" class="workspace" :class="{ 'has-background': background, drawing: tool !== 'select', 'pan-ready': spacePressed, panning }" @wheel="zoomMap" @mousedown.capture="preventPanMouseDefault" @auxclick="preventPanMouseDefault" @pointerdown.capture="beginPan" @pointermove.capture="updatePan" @pointerup.capture="endPan" @pointercancel="endPan" @lostpointercapture="endPan" @pointerdown.self="!busy && $event.button === 0 && (selectedId = null)">
           <div v-if="background" class="drawing-tools" aria-label="绘图工具"><button aria-label="选择工具" aria-keyshortcuts="1" :aria-pressed="tool === 'select'" :disabled="busy" @click="selectTool('select')">↖ 选择 <kbd>1</kbd></button><button aria-label="绘制矩形" aria-keyshortcuts="2" :aria-pressed="tool === 'rectangle'" :disabled="busy" @click="selectTool('rectangle')">▭ 矩形 <kbd>2</kbd></button><button aria-label="绘制椭圆" aria-keyshortcuts="3" :aria-pressed="tool === 'ellipse'" :disabled="busy" @click="selectTool('ellipse')">⬭ 椭圆 <kbd>3</kbd></button><span :title="drawingHint">{{ drawingHint }}</span></div>
           <div v-if="!background" class="empty-workspace">

@@ -49,7 +49,7 @@ app.whenReady().then(() => {
     const safeName = path.basename(filename).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
     const project = safeName.endsWith('.frame.json')
     const extension = path.extname(safeName).slice(1).toLowerCase()
-    const formats = { json: 'JSON 文件', png: 'PNG 图片', jpg: 'JPEG 图片', jpeg: 'JPEG 图片', webp: 'WebP 图片' }
+    const formats = { json: 'JSON 文件', png: 'PNG 图片', jpg: 'JPEG 图片', jpeg: 'JPEG 图片', webp: 'WebP 图片', zip: 'ZIP 压缩文件' }
     if (!Object.hasOwn(formats, extension)) throw new Error('不支持的文件类型。')
     const result = await dialog.showSaveDialog(mainWindow, {
       title: project ? '保存项目到便携目录' : '导出到便携目录',
