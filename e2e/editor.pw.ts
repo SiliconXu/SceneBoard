@@ -169,7 +169,7 @@ test('movement stays inside background even when pointer leaves the image', asyn
   await expect(page.getByTestId('layer-card')).toContainText('(800, 600)')
 })
 
-test('names, outside corner labels, shape drawing, Ctrl, and optional exported annotations', async ({ page }) => {
+test('names, outside corner labels, shape drawing, Shift constraints, and optional exported annotations', async ({ page }) => {
   await page.goto('/')
   await page.getByTestId('background-input').setInputFiles(await imageFile(page, 'scene.png', 800, 600, '#e0e0e0'))
   await page.getByTestId('layer-input').setInputFiles(await imageFile(page, 'hero.png', 200, 100, '#ff0000'))
@@ -186,29 +186,42 @@ test('names, outside corner labels, shape drawing, Ctrl, and optional exported a
   const stage = (await page.getByTestId('stage').boundingBox())!
   const scale = stage.width / 800
   const point = (x: number, y: number) => ({ x: stage.x + x * scale, y: stage.y + y * scale })
-  const draw = async (kind: '正方形' | '圆形', start: { x: number; y: number }, end: { x: number; y: number }, ctrl = false) => {
+  const draw = async (kind: '矩形' | '椭圆', start: { x: number; y: number }, end: { x: number; y: number }, shift = false) => {
     await page.getByRole('button', { name: `绘制${kind}`, exact: true }).click()
     const from = point(start.x, start.y); const to = point(end.x, end.y)
-    if (ctrl) await page.keyboard.down('Control')
+    await expect(page.locator('.drawing-tools')).toContainText(`按住 Shift 绘制${kind === '矩形' ? '正方形' : '圆形'}`)
+    if (shift) await page.keyboard.down('Shift')
     await page.mouse.move(from.x, from.y); await page.mouse.down(); await page.mouse.move(to.x, to.y); await page.mouse.up()
-    if (ctrl) await page.keyboard.up('Control')
+    if (shift) await page.keyboard.up('Shift')
   }
-  await draw('正方形', { x: 40, y: 60 }, { x: 160, y: 100 })
+  await draw('矩形', { x: 40, y: 60 }, { x: 160, y: 100 }, true)
   await expect(page.getByTestId('layer-card').first()).toContainText('120 × 120 px')
-  await draw('圆形', { x: 500, y: 50 }, { x: 550, y: 90 })
+  await expect(page.getByTestId('layer-card').first()).toContainText('rectangle_1')
+  await draw('椭圆', { x: 500, y: 50 }, { x: 550, y: 90 }, true)
   await expect(page.getByTestId('layer-card').first()).toContainText('50 × 50 px')
-  await draw('正方形', { x: 30, y: 350 }, { x: 210, y: 440 }, true)
+  await expect(page.getByTestId('layer-card').first()).toContainText('ellipse_1')
+  await draw('矩形', { x: 30, y: 350 }, { x: 210, y: 440 })
   await expect(page.getByTestId('layer-card').first()).toContainText('180 × 90 px')
-  await draw('圆形', { x: 400, y: 400 }, { x: 600, y: 500 }, true)
+  await expect(page.getByTestId('layer-card').first()).toContainText('rectangle_2')
+  await draw('椭圆', { x: 400, y: 400 }, { x: 600, y: 500 })
   await expect(page.getByTestId('layer-card').first()).toContainText('200 × 100 px')
+  await expect(page.getByTestId('layer-card').first()).toContainText('ellipse_2')
   await rename(page, '目标区域')
-  // Ctrl may be toggled without moving the pointer during a drawing gesture.
-  await page.getByRole('button', { name: '绘制正方形', exact: true }).click()
-  await expect(page.getByRole('button', { name: '绘制正方形', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  // Shift may be pressed and released without moving the pointer during drawing.
+  await page.getByRole('button', { name: '绘制矩形', exact: true }).click()
+  await expect(page.getByRole('button', { name: '绘制矩形', exact: true })).toHaveAttribute('aria-pressed', 'true')
   const from = point(650, 200); const to = point(730, 250)
   await page.mouse.move(from.x, from.y); await page.mouse.down(); await page.mouse.move(to.x, to.y)
   await expect(page.locator('.shape-preview')).toBeVisible()
+  await page.keyboard.down('Shift')
+  await expect(page.locator('.drawing-tools')).toContainText('Shift：绘制正方形')
+  const squarePreview = (await page.locator('.shape-preview').boundingBox())!
+  expect(squarePreview.width / squarePreview.height).toBeCloseTo(1, 1)
   await page.keyboard.down('Control')
+  const combinedPreview = (await page.locator('.shape-preview').boundingBox())!
+  expect(combinedPreview.width / combinedPreview.height).toBeCloseTo(1, 1)
+  await page.keyboard.up('Shift')
+  await expect(page.locator('.drawing-tools')).toContainText('按住 Shift 绘制正方形')
   const preview = (await page.locator('.shape-preview').boundingBox())!
   expect(preview.width / preview.height).toBeCloseTo(1.6, 1)
   await page.mouse.up(); await page.keyboard.up('Control')
@@ -280,13 +293,15 @@ test('nine anchors, color controls, translucent fills, shortcuts, and persistenc
   await expect(page.getByRole('button', { name: '选择工具', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await page.getByRole('heading', { name: 'bg.png' }).click()
   await page.keyboard.press('2')
-  await expect(page.getByRole('button', { name: '绘制正方形' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('button', { name: '绘制矩形' })).toHaveAttribute('aria-pressed', 'true')
   await page.getByRole('button', { name: '边框红色' }).click()
   await page.getByRole('button', { name: '填充绿色' }).click()
   const box = (await page.getByTestId('stage').boundingBox())!
   const scale = box.width / 800
   await page.mouse.move(box.x + 50 * scale, box.y + 100 * scale)
+  await page.keyboard.down('Shift')
   await page.mouse.down(); await page.mouse.move(box.x + 150 * scale, box.y + 150 * scale); await page.mouse.up()
+  await page.keyboard.up('Shift')
   await expect(page.getByTestId('top-left-label')).toHaveText('(50, 100)')
   await expect(page.getByTestId('bottom-right-label')).toHaveText('(150, 200)')
   await expect(page.getByTestId('center-label')).toHaveCount(0)
@@ -313,7 +328,7 @@ test('nine anchors, color controls, translucent fills, shortcuts, and persistenc
   await expect(page.getByRole('button', { name: '填充紫色' })).toHaveAttribute('aria-pressed', 'true')
   await expect(page.getByTestId('image-layer').last().locator('rect')).toHaveAttribute('fill', '#a855f7')
   await page.keyboard.press('3')
-  await expect(page.getByRole('button', { name: '绘制圆形' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('button', { name: '绘制椭圆' })).toHaveAttribute('aria-pressed', 'true')
   await page.keyboard.press('1')
   await expect(page.getByRole('button', { name: '选择工具', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await page.getByTestId('layer-card').last().click()

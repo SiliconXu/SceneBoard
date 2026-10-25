@@ -30,16 +30,16 @@ async function save() {
   <div class="modal-backdrop" @click.self="close" @keydown.esc.stop="close">
     <section class="modal pygame-dialog" role="dialog" aria-modal="true" aria-labelledby="pygame-title" :aria-busy="busy">
       <h2 id="pygame-title">导出 Pygame Zero 项目</h2>
-      <p>只生成场景显示代码。运行前请安装 Python 和 Pygame Zero，可使用 python main.py 启动。</p>
+      <p>生成场景显示代码和 Rect 碰撞区域，碰撞处理由学生编写。运行前请安装 Python 和 Pygame Zero，可使用 python main.py 启动。</p>
       <label class="project-name">项目名称<input ref="nameInput" v-model="name" aria-label="项目名称" maxlength="100" :disabled="busy" /></label>
       <p>main.py · images/ · {{ preview.imageCount }} 张图片</p>
       <p v-if="project.animations?.length">含 {{ project.animations.length }} 组动画帧，仅导出图片；main.py 不创建动画角色或播放逻辑。</p>
       <p v-if="project.background.kind === 'color'">纯色背景直接填充 {{ project.background.color }}，不生成 background.png。</p>
-      <p v-if="preview.shapeCount">{{ preview.shapeCount }} 个矩形／椭圆为辅助标记，不导出。名称、坐标与选框也不导出。</p>
+      <p v-if="preview.shapeCount">{{ preview.shapeCount }} 个图形生成 Rect 碰撞区域，不生成图片、不绘制；圆形／椭圆使用外接矩形。名称、坐标标签与选框不绘制。</p>
       <div v-if="preview.issues.length" class="name-issues" role="alert">
         <strong>请修改以下图层或动画素材名称后重新打开导出：</strong>
         <ul><li v-for="issue in preview.issues" :key="issue.id"><button class="text-button" :disabled="busy" @click="emit('locate', issue.id, issue.target)">{{ issue.name || '未命名对象' }} · 定位修改</button><span>{{ issue.reason }}</span></li></ul>
-        <small>去掉图片扩展名后，使用小写英文字母开头，仅包含小写字母、数字和下划线，不得重名或使用保留名称。</small>
+        <small>图片名称去掉扩展名，图形直接使用名称；须以小写英文字母开头，仅包含小写字母、数字和下划线，不得重名或使用保留名称。</small>
       </div>
       <template v-else><strong class="validation-ok">名称检查通过</strong><pre class="code-preview" aria-label="Python 代码预览" tabindex="0">{{ preview.code }}</pre></template>
       <p v-if="error" class="form-error" role="alert">{{ error }}</p>

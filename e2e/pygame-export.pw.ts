@@ -21,7 +21,7 @@ async function fixture(page: Page, kind: 'color' | 'image', name = 'cat.png') {
     layers: [
       { id: 'cat', name, src: sources.actor, x: 20.25, y: 30.5, width: 80.5, height: 40.25 },
       { id: 'dog', name: 'dog', src: sources.dog, x: 60, y: 50, width: 40, height: 20 },
-      { id: 'shape', kind: 'rectangle', name: '辅助区域', color: '#ffffff', x: 0, y: 0, width: 20, height: 20 },
+      { id: 'shape', kind: 'rectangle', name: 'wall', color: '#ffffff', x: 0, y: 0, width: 20, height: 20 },
     ],
   })) })
   await expect(page.getByRole('status')).toContainText('项目已恢复')
@@ -94,10 +94,11 @@ for (const kind of ['color', 'image'] as const) {
     if (kind === 'color') await expect(page.getByTestId('stage')).toHaveCSS('background-image', 'none')
     else await expect(page.getByTestId('stage')).toHaveCSS('background-image', /repeating-conic-gradient/)
     const dialog = await openExport(page)
-    await expect(dialog).toContainText('1 个矩形／椭圆')
+    await expect(dialog).toContainText('1 个图形生成 Rect 碰撞区域')
     const code = await dialog.getByLabel('Python 代码预览').textContent()
     await page.screenshot({ path: `test-results/pygame-preview-${kind}.png`, fullPage: true })
     expect(code).toContain('cat.pos = (61, 51)')
+    expect(code).toContain('wall = Rect(0, 0, 20, 20)')
     const zip = await downloadBytes(page, () => dialog.getByRole('button', { name: '下载项目 ZIP' }).click())
     const files = unzipSync(zip)
     expect(strFromU8(files['pygame_project/main.py']!)).toBe(code)
@@ -131,4 +132,48 @@ test('invalid names block export and locate editing; empty scenes keep images/',
   expect(Object.keys(unzipSync(zip))).toEqual(['pygame_project/images/', 'pygame_project/main.py'])
   await expect(page.locator('.unsaved-dot')).toHaveCount(1)
   await writeFile('test-results/pygame-runtime-empty.zip', zip)
+})
+
+test('shape-only export validates names, preserves precision and emits bounding Rects without images', async ({ page }) => {
+  await page.goto('/')
+  const project = {
+    version: 4, background: { kind: 'color', name: '碰撞区域', color: '#203040', width: 320, height: 240 },
+    layers: [
+      { id: 'wall', kind: 'rectangle', name: '矩形 1', color: '#ffffff', x: 10.25, y: 20.5, width: 100.9, height: 50.45 },
+      { id: 'goal', kind: 'ellipse', name: 'goal', color: '#ffffff', x: 200.6, y: 100.4, width: 20.5, height: 10.25 },
+    ],
+  }
+  await page.getByTestId('project-input').setInputFiles({ name: 'collisions.frame.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(project)) })
+  let dialog = await openExport(page)
+  await expect(dialog.getByRole('button', { name: '下载项目 ZIP' })).toBeDisabled()
+  await dialog.getByRole('button', { name: '矩形 1 · 定位修改' }).click()
+  const name = page.getByLabel('角色 / 物品名称')
+  await name.fill('goal'); await name.press('Enter')
+  dialog = await openExport(page)
+  await expect(dialog.getByRole('alert')).toContainText('导出名称与其他图层或动画帧名称重复')
+  await expect(dialog.getByRole('button', { name: '下载项目 ZIP' })).toBeDisabled()
+  await dialog.getByRole('button', { name: 'goal · 定位修改' }).first().click()
+  await name.fill('wall'); await name.press('Enter')
+  await downloadBytes(page, () => page.getByRole('button', { name: '保存项目' }).click())
+  dialog = await openExport(page)
+  await expect(dialog).toContainText('2 个图形生成 Rect 碰撞区域')
+  await expect(dialog).toContainText('圆形／椭圆使用外接矩形')
+  const code = await dialog.getByLabel('Python 代码预览').textContent()
+  expect(code).toContain('wall = Rect(10, 21, 101, 50)')
+  expect(code).toContain('# 圆形／椭圆的外接矩形碰撞区域\ngoal = Rect(201, 100, 21, 10)')
+  expect(code).not.toMatch(/Actor\(|\.draw\(|collide|def update|screen\.draw/)
+  const zip = await downloadBytes(page, () => dialog.getByRole('button', { name: '下载项目 ZIP' }).click())
+  const files = unzipSync(zip)
+  expect(Object.keys(files)).toEqual(['pygame_project/images/', 'pygame_project/main.py'])
+  expect(strFromU8(files['pygame_project/main.py']!)).toBe(code)
+  await expect(page.locator('.unsaved-dot')).toHaveCount(0)
+  const saved = JSON.parse((await downloadBytes(page, () => page.getByRole('button', { name: '保存项目' }).click())).toString())
+  expect(saved.layers).toEqual([{ ...project.layers[0], name: 'wall' }, project.layers[1]])
+  await writeFile('test-results/pygame-runtime-shapes.zip', zip)
+  dialog = await openExport(page)
+  for (const width of [1024, 1280]) {
+    await page.setViewportSize({ width, height: 900 })
+    await expect(dialog.getByRole('button', { name: '下载项目 ZIP' })).toBeInViewport()
+    await page.screenshot({ path: `test-results/pygame-preview-shapes-${width}.png`, fullPage: true })
+  }
 })

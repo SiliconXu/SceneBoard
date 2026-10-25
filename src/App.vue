@@ -13,7 +13,7 @@ import { sourceRect } from './image-processing'
 import EditableName from './EditableName.vue'
 import DistanceGuides from './DistanceGuides.vue'
 import { proximityGuides, type Guides } from './guides'
-import { reorderLayers } from './layers'
+import { nextShapeName, reorderLayers } from './layers'
 import SelectionProperties from './SelectionProperties.vue'
 import { alignSelection, containedBy, distributeSelection, editRect, moveSelection, pasteSelection, positionAt, selectionBounds, type Alignment, type Axis, type PositionAnchor, type RectField } from './transforms'
 import logoUrl from './logo.png'
@@ -140,7 +140,14 @@ const confirmReplace = ref(false)
 const dirty = ref(false)
 const tool = ref<'select' | 'rectangle' | 'ellipse'>('select')
 const draft = ref<ShapeLayer | null>(null)
+const shiftPressed = ref(false)
 const ctrlPressed = ref(false)
+const drawingHint = computed(() => {
+  if (tool.value !== 'select') return shiftPressed.value ? `Shift：绘制${tool.value === 'rectangle' ? '正方形' : '圆形'}` : `按住 Shift 绘制${tool.value === 'rectangle' ? '正方形' : '圆形'}`
+  if (selected.value && !isImageLayer(selected.value)) return shiftPressed.value ? 'Shift：缩放为正方形 / 圆形' : ctrlPressed.value ? 'Ctrl：自由调整图形宽高' : '图形缩放：默认等比，Shift 正方形 / 圆形，Ctrl 自由宽高'
+  if (selectedImage.value) return '图片保持比例缩放'
+  return '默认绘制矩形 / 椭圆，按住 Shift 绘制正方形 / 圆形'
+})
 const exportCoordinatesOption = ref(false)
 const exportNamesOption = ref(false)
 const defaultBorder = ref('#536bdd')
@@ -395,7 +402,7 @@ function setNameEditing(id: string, active: boolean) {
   else if (editingLayerId.value === id) editingLayerId.value = null
 }
 
-interface Gesture { id: string; pointerId: number; target: HTMLElement; start: Point; rect: Rect; rects: Layer[]; corner?: Corner; scale: number; origin: Point; collapse: boolean; moved: boolean }
+interface Gesture { id: string; pointerId: number; target: HTMLElement; start: Point; last: Point; rect: Rect; rects: Layer[]; corner?: Corner; scale: number; origin: Point; collapse: boolean; moved: boolean }
 let gesture: Gesture | null = null
 function selectCanvasLayer(id: string, event?: KeyboardEvent) {
   if (busy.value) return
@@ -439,9 +446,23 @@ function beginGesture(event: PointerEvent, layer: Layer, corner?: Corner) {
   const point = screenToImage({ x: event.clientX, y: event.clientY }, origin, scale.value)
   const handleCorner = corner ? { x: corner.endsWith('e') ? layer.x + layer.width : layer.x, y: corner.startsWith('s') ? layer.y + layer.height : layer.y } : point
   // Account for clicking slightly off the exact corner, preventing a jump at drag start.
-  gesture = { rects: selectedLayers.value.map(item => ({ ...item })), collapse, moved: false, id: layer.id, pointerId: event.pointerId, target, start: { x: point.x - handleCorner.x, y: point.y - handleCorner.y }, rect: { x: layer.x, y: layer.y, width: layer.width, height: layer.height }, corner, scale: scale.value, origin }
+  shiftPressed.value = event.shiftKey; ctrlPressed.value = event.ctrlKey
+  gesture = { rects: selectedLayers.value.map(item => ({ ...item })), collapse, moved: false, id: layer.id, pointerId: event.pointerId, target, start: { x: point.x - handleCorner.x, y: point.y - handleCorner.y }, last: point, rect: { x: layer.x, y: layer.y, width: layer.width, height: layer.height }, corner, scale: scale.value, origin }
   if (!corner) gesture.start = point
   target.setPointerCapture(event.pointerId)
+}
+
+function refreshResize() {
+  if (!gesture?.corner || !gesture.moved || !background.value) return
+  const layer = layers.value.find(item => item.id === gesture!.id)
+  if (!layer) return
+  const point = { x: gesture.last.x - gesture.start.x, y: gesture.last.y - gesture.start.y }
+  const shape = !isImageLayer(layer)
+  const result = shape && ctrlPressed.value && !shiftPressed.value
+    ? resizeFreeRect(gesture.rect, gesture.corner, point, background.value)
+    : resizeRect(gesture.rect, gesture.corner, point, background.value, shape && shiftPressed.value)
+  applyRects([{ ...layer, ...result }])
+  guides.value = null
 }
 
 function updateGesture(event: PointerEvent) {
@@ -449,13 +470,13 @@ function updateGesture(event: PointerEvent) {
   const layer = layers.value.find(item => item.id === gesture!.id)
   if (!layer) return
   const point = screenToImage({ x: event.clientX, y: event.clientY }, gesture.origin, gesture.scale)
+  gesture.last = point
+  shiftPressed.value = event.shiftKey; ctrlPressed.value = event.ctrlKey
   const distance = Math.hypot(point.x - gesture.start.x, point.y - gesture.start.y) * gesture.scale
   if (!gesture.corner && !gesture.moved && distance < 3) return
   gesture.moved = true
   if (gesture.corner) {
-    const result = (!isImageLayer(layer) && event.ctrlKey ? resizeFreeRect : resizeRect)(gesture.rect, gesture.corner, { x: point.x - gesture.start.x, y: point.y - gesture.start.y }, background.value)
-    applyRects([{ ...layer, ...result }])
-    guides.value = null
+    refreshResize()
   } else {
     applyRects(moveSelection(gesture.rects, { x: point.x - gesture.start.x, y: point.y - gesture.start.y }, background.value))
     updateSelectionGuides()
@@ -465,6 +486,7 @@ function updateGesture(event: PointerEvent) {
 
 function finishGesture(event: PointerEvent) {
   if (!gesture || event.pointerId !== gesture.pointerId) return
+  if (gesture.corner && gesture.moved) updateGesture(event)
   const collapse = gesture.collapse && !gesture.moved
   const id = gesture.id
   endGesture()
@@ -501,7 +523,7 @@ function updateMarquee(event: PointerEvent) {
   const point = screenToImage({ x: event.clientX, y: event.clientY }, marquee.origin, marquee.scale)
   if (!marquee.moved && Math.hypot(point.x - marquee.start.x, point.y - marquee.start.y) * marquee.scale < 3) return
   marquee.moved = true
-  const box = drawRect(marquee.start, point, background.value, true)
+  const box = drawRect(marquee.start, point, background.value)
   marqueeBox.value = box
   setSelection([...new Set([...marquee.base, ...layers.value.filter(layer => containedBy(layer, box)).map(layer => layer.id)])])
 }
@@ -537,19 +559,21 @@ function beginDrawing(event: PointerEvent) {
   const raw = screenToImage({ x: event.clientX, y: event.clientY }, origin, scale.value)
   const start = { x: clamp(raw.x, 0, background.value.width), y: clamp(raw.y, 0, background.value.height) }
   selectedId.value = null
+  shiftPressed.value = event.shiftKey
   ctrlPressed.value = event.ctrlKey
-  draft.value = { id: crypto.randomUUID(), kind: tool.value, color: defaultBorder.value, fillColor: defaultFill.value, name: '', ...drawRect(start, start, background.value, event.ctrlKey) }
+  draft.value = { id: crypto.randomUUID(), kind: tool.value, color: defaultBorder.value, fillColor: defaultFill.value, name: '', ...drawRect(start, start, background.value, event.shiftKey) }
   drawing = { pointerId: event.pointerId, target: stage.value, start, last: start, scale: scale.value, origin }
   stage.value.setPointerCapture(event.pointerId)
 }
 
 function refreshDrawing() {
-  if (drawing && draft.value && background.value) Object.assign(draft.value, drawRect(drawing.start, drawing.last, background.value, ctrlPressed.value))
+  if (drawing && draft.value && background.value) Object.assign(draft.value, drawRect(drawing.start, drawing.last, background.value, shiftPressed.value))
 }
 
 function updateDrawing(event: PointerEvent) {
   if (!drawing || drawing.pointerId !== event.pointerId) return
   drawing.last = screenToImage({ x: event.clientX, y: event.clientY }, drawing.origin, drawing.scale)
+  shiftPressed.value = event.shiftKey
   ctrlPressed.value = event.ctrlKey
   refreshDrawing()
 }
@@ -567,9 +591,7 @@ function finishDrawing(event: PointerEvent) {
   const shape = draft.value
   cancelDrawing()
   if (!shape || shape.width < 1 || shape.height < 1) return
-  const equal = Math.abs(shape.width - shape.height) < 1e-6
-  const prefix = shape.kind === 'rectangle' ? (equal ? '正方形' : '矩形') : (equal ? '圆形' : '椭圆')
-  shape.name = `${prefix} ${layers.value.filter(layer => layer.kind === shape.kind).length + 1}`
+  shape.name = nextShapeName(shape.kind, layers.value, animations.value)
   layers.value.push(shape)
   selectedId.value = shape.id
   dirty.value = true
@@ -733,8 +755,9 @@ function onKeydown(event: KeyboardEvent) {
     }
     if (!['Enter', ' '].includes(event.key)) { event.preventDefault(); return }
   }
+  shiftPressed.value = event.shiftKey
   ctrlPressed.value = event.ctrlKey
-  if (event.key === 'Control') refreshDrawing()
+  if (event.key === 'Shift' || event.key === 'Control') { refreshDrawing(); refreshResize() }
   if (confirmReplace.value) { if (event.key === 'Escape') cancelReplace(); return }
   const target = event.target as HTMLElement
   if (event.isComposing || target?.isContentEditable || target?.closest('input, textarea, select')) return
@@ -771,8 +794,11 @@ function onKeydown(event: KeyboardEvent) {
   }
   if ((event.key === 'Delete' || event.key === 'Backspace') && selectedLayers.value.length) { event.preventDefault(); removeSelected() }
 }
-function onKeyup(event: KeyboardEvent) { ctrlPressed.value = event.ctrlKey; if (event.key === 'Control') refreshDrawing() }
-function onBlur() { closeObjectMenu(); ctrlPressed.value = false; cancelDrawing(); endGesture(); endMarquee(); endPan() }
+function onKeyup(event: KeyboardEvent) {
+  shiftPressed.value = event.shiftKey; ctrlPressed.value = event.ctrlKey
+  if (event.key === 'Shift' || event.key === 'Control') { refreshDrawing(); refreshResize() }
+}
+function onBlur() { closeObjectMenu(); shiftPressed.value = false; ctrlPressed.value = false; cancelDrawing(); endGesture(); endMarquee(); endPan() }
 function beforeUnload(event: BeforeUnloadEvent) { if (dirty.value && background.value) { event.preventDefault(); event.returnValue = '' } }
 function closeExport(event: MouseEvent) {
   if (!(event.target as HTMLElement).closest('.export-wrap')) showExport.value = false
@@ -839,7 +865,7 @@ onBeforeUnmount(() => {
       <section class="editor-panel" aria-label="图片编辑区">
         <div class="editor-heading"><div><span class="section-kicker">WORKSPACE</span><h1>{{ background ? background.name : '让每个位置，都有坐标。' }}</h1></div><span class="local-badge"><i></i>本地处理</span></div>
         <div ref="workspace" class="workspace" :class="{ 'has-background': background, drawing: tool !== 'select', panning }" @wheel="zoomMap" @contextmenu.prevent @pointerdown.capture="beginPan" @pointermove.capture="updatePan" @pointerup.capture="endPan" @pointercancel="endPan" @lostpointercapture="endPan" @pointerdown.self="!busy && $event.button === 0 && (selectedId = null)">
-          <div v-if="background" class="drawing-tools" aria-label="绘图工具"><button aria-label="选择工具" aria-keyshortcuts="1" :aria-pressed="tool === 'select'" :disabled="busy" @click="selectTool('select')">↖ 选择 <kbd>1</kbd></button><button aria-label="绘制正方形" aria-keyshortcuts="2" :aria-pressed="tool === 'rectangle'" :disabled="busy" @click="selectTool('rectangle')">□ 正方形 <kbd>2</kbd></button><button aria-label="绘制圆形" aria-keyshortcuts="3" :aria-pressed="tool === 'ellipse'" :disabled="busy" @click="selectTool('ellipse')">○ 圆形 <kbd>3</kbd></button><span>{{ tool === 'select' ? '选择图形后按 Ctrl 自由缩放' : ctrlPressed ? 'Ctrl：自由宽高' : '按住 Ctrl 绘制矩形 / 椭圆' }}</span></div>
+          <div v-if="background" class="drawing-tools" aria-label="绘图工具"><button aria-label="选择工具" aria-keyshortcuts="1" :aria-pressed="tool === 'select'" :disabled="busy" @click="selectTool('select')">↖ 选择 <kbd>1</kbd></button><button aria-label="绘制矩形" aria-keyshortcuts="2" :aria-pressed="tool === 'rectangle'" :disabled="busy" @click="selectTool('rectangle')">▭ 矩形 <kbd>2</kbd></button><button aria-label="绘制椭圆" aria-keyshortcuts="3" :aria-pressed="tool === 'ellipse'" :disabled="busy" @click="selectTool('ellipse')">⬭ 椭圆 <kbd>3</kbd></button><span :title="drawingHint">{{ drawingHint }}</span></div>
           <div v-if="!background" class="empty-workspace">
             <div class="empty-art" aria-hidden="true"><div class="art-back"></div><div class="art-front"><svg viewBox="0 0 80 60" fill="none"><circle cx="57" cy="17" r="6" fill="currentColor"/><path d="M10 48 29 26l15 17 10-11 17 16H10Z" fill="currentColor"/></svg></div><span class="art-cross">＋</span><span class="art-corner"></span></div>
             <span class="empty-kicker">YOUR CANVAS STARTS HERE</span>
@@ -857,7 +883,7 @@ onBeforeUnmount(() => {
               <ImageContent v-if="isImageLayer(layer)" :layer="layer" />
               <ShapeView v-else :shape="layer" />
               <template v-if="selected?.id === layer.id">
-                <button v-for="corner in corners" :key="corner" class="resize-handle" :class="corner" :data-testid="`resize-${corner}`" :aria-label="`从${cornerLabels[corner]}等比例缩放`" @pointerdown.stop="beginGesture($event, layer, corner)"></button>
+                <button v-for="corner in corners" :key="corner" class="resize-handle" :class="corner" :data-testid="`resize-${corner}`" :aria-label="`从${cornerLabels[corner]}缩放`" :title="isImageLayer(layer) ? '图片保持比例缩放' : '默认等比缩放；Shift 正方形 / 圆形；Ctrl 自由宽高（Shift 优先）'" @pointerdown.stop="beginGesture($event, layer, corner)"></button>
               </template>
             </div>
             <div v-if="selectionBox && selectedLayers.length > 1" class="group-selection" :style="{ ...layerStyle(selectionBox, layers.length + 1) }" data-testid="group-selection"></div>

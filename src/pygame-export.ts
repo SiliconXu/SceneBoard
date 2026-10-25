@@ -12,7 +12,8 @@ export type NameIssue = ResourceIssue
 
 export function analyzePygameProject(background: Background, layers: Layer[], animations: AnimationGroup[] = []) {
   const images = layers.filter(isImageLayer)
-  const issues = analyzeResources(layers, animations)
+  const shapes = layers.filter(layer => !isImageLayer(layer))
+  const issues = analyzeResources(layers, animations, { includeShapes: true })
   let code = ''
   if (!issues.length) {
     const lines = ['import pgzrun', '', '# 窗口大小', `WIDTH = ${background.width}`, `HEIGHT = ${background.height}`, '']
@@ -21,6 +22,13 @@ export function analyzePygameProject(background: Background, layers: Layer[], an
       for (const layer of images) {
         const name = resourceName(layer.name)
         lines.push(`${name} = Actor('${name}')`, `${name}.pos = (${Math.round(layer.x + layer.width / 2)}, ${Math.round(layer.y + layer.height / 2)})`, '')
+      }
+    }
+    if (shapes.length) {
+      lines.push('# 碰撞区域：Rect(左上角 X, 左上角 Y, 宽, 高)')
+      for (const shape of shapes) {
+        if (shape.kind === 'ellipse') lines.push('# 圆形／椭圆的外接矩形碰撞区域')
+        lines.push(`${shape.name} = Rect(${Math.round(shape.x)}, ${Math.round(shape.y)}, ${Math.max(1, Math.round(shape.width))}, ${Math.max(1, Math.round(shape.height))})`, '')
       }
     }
     lines.push('# 绘制场景', 'def draw():', background.kind === 'color' ? `    screen.fill('${background.color}')` : "    screen.blit('background', (0, 0))")
@@ -33,7 +41,7 @@ export function analyzePygameProject(background: Background, layers: Layer[], an
 
 export async function buildPygameFiles(project: Project): Promise<ProjectFile[]> {
   const preview = analyzePygameProject(project.background, project.layers, project.animations)
-  if (preview.issues.length) throw new Error('请先修改不符合要求的图片名称。')
+  if (preview.issues.length) throw new Error('请先修改不符合要求的图层或动画素材名称。')
   assertCanvasSize(project.background)
   const files: ProjectFile[] = [{ path: 'main.py', bytes: strToU8(preview.code) }]
   if (project.background.kind !== 'color') {

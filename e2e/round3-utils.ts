@@ -29,7 +29,7 @@ export async function source(page: Page, mode = 'padding') {
 export async function openScene(page: Page, src: string, edits: Record<string, unknown> = {}) {
   await page.getByTestId('project-input').setInputFiles({ name: 'scene.frame.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({
     version: 4, background: { kind: 'color', name: '背景', color: '#203040', width: 320, height: 240 },
-    layers: [ { id: 'hero', kind: 'image', name: 'hero', src, x: 20.25, y: 30.5, width: 40, height: 24, ...edits }, { id: 'shape', kind: 'rectangle', name: '辅助', color: '#ffffff', x: 200, y: 200, width: 20, height: 20 } ],
+    layers: [ { id: 'hero', kind: 'image', name: 'hero', src, x: 20.25, y: 30.5, width: 40, height: 24, ...edits }, { id: 'shape', kind: 'rectangle', name: 'obstacle', color: '#ffffff', x: 200, y: 200, width: 20, height: 20 } ],
   })) })
   await expect(page.locator('.toast')).toContainText('项目已恢复')
   await page.locator('[data-card-id="hero"]').click()

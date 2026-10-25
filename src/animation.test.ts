@@ -32,6 +32,9 @@ describe('independent animation assets', () => {
     expect(result.code).toContain("hero = Actor('hero')")
     expect(result.code).not.toContain('walk'); expect(result.code).not.toContain('update')
   })
+  it('keeps shape names out of independent animation image export validation', () => {
+    expect(analyzeResources([{ id: 'shape', kind: 'rectangle', name: '矩形 1', color: '#ffffff', x: 0, y: 0, width: 10, height: 10 }], [group])).toEqual([])
+  })
   it('round trips frame order, original source, dimensions and FPS without scene layers', () => {
     const project = { version: 4, background, layers: [], animations: [group] }
     expect(parseProject(JSON.stringify(project))).toEqual(project)

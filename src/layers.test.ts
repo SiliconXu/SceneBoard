@@ -1,8 +1,29 @@
 import { describe, expect, it } from 'vitest'
-import { pastedLayer, reorderLayers } from './layers'
-import type { Layer } from './project'
+import { nextShapeName, pastedLayer, reorderLayers } from './layers'
+import type { Layer, ShapeLayer } from './project'
+import { resourceNameIssue } from './resource-names'
 
 const layers: Layer[] = ['a', 'b', 'c'].map(id => ({ id, name: id, src: 'data:image/png;base64,AA==', x: 0, y: 0, width: 10, height: 10 }))
+
+describe('default shape names', () => {
+  const shape: ShapeLayer = { id: 'shape', kind: 'rectangle', name: 'rectangle_1', color: '#ffffff', x: 0, y: 0, width: 10, height: 10 }
+  it.each(['rectangle', 'ellipse'] as const)('generates a valid pgz name for %s', kind => {
+    const name = nextShapeName(kind, [])
+    expect(name).toBe(`${kind}_1`)
+    expect(resourceNameIssue(name)).toBe('')
+  })
+  it('avoids all layer names including image stems and names remaining after deletion', () => {
+    const existing = [shape, { ...layers[0]!, name: 'rectangle_2.PNG' }, { ...shape, id: 'other', kind: 'ellipse' as const, name: 'rectangle_4' }]
+    expect(nextShapeName('rectangle', existing)).toBe('rectangle_3')
+    expect(nextShapeName('rectangle', existing.filter(layer => layer.id !== 'shape'))).toBe('rectangle_1')
+    expect(existing[0]!.name).toBe('rectangle_1')
+  })
+  it('skips matching animation frame names', () => {
+    const existing = Array.from({ length: 99 }, (_, index) => ({ ...shape, id: String(index), name: `rectangle_${index + 1}` }))
+    const frame = { id: 'frame', name: 'frame.png', src: '', width: 10, height: 10 }
+    expect(nextShapeName('rectangle', existing, [{ id: 'group', name: 'rectangle', fps: 10, frames: Array.from({ length: 100 }, () => frame) }])).toBe('rectangle_101')
+  })
+})
 describe('sidebar layer ordering', () => {
   it('moves a bottom layer above the top layer', () => {
     expect(reorderLayers(layers, 'a', 'c', true).map(layer => layer.id)).toEqual(['b', 'c', 'a'])

@@ -1,6 +1,16 @@
-import type { Layer } from './project'
+import { isImageLayer, type AnimationGroup, type Layer, type ShapeLayer } from './project'
 import { type Size } from './geometry'
 import { pasteSelection } from './transforms'
+import { resourceName } from './resource-names'
+import { animationFrameName } from './animation'
+
+export function nextShapeName(kind: ShapeLayer['kind'], layers: Layer[], animations: AnimationGroup[] = []): string {
+  const used = new Set(layers.map(layer => isImageLayer(layer) ? resourceName(layer.name) : layer.name))
+  for (const group of animations) group.frames.forEach((_, index) => used.add(animationFrameName(group, index)))
+  let index = 1
+  while (used.has(`${kind}_${index}`)) index++
+  return `${kind}_${index}`
+}
 
 export function pastedLayer(source: Layer, bounds: Size, id: string, offset: number): Layer {
   return { ...pasteSelection([source], bounds, offset)[0]!, id }

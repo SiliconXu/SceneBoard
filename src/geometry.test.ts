@@ -54,18 +54,18 @@ describe('original-pixel geometry', () => {
 
 describe('shape drawing', () => {
   const bounds = { width: 800, height: 600 }
-  it('defaults to equal width and height', () => {
-    expect(drawRect({ x: 100, y: 100 }, { x: 250, y: 180 }, bounds, false)).toEqual({ x: 100, y: 100, width: 150, height: 150 })
+  it('defaults to rectangular dimensions', () => {
+    expect(drawRect({ x: 100, y: 100 }, { x: 250, y: 180 }, bounds)).toEqual({ x: 100, y: 100, width: 150, height: 80 })
   })
-  it('allows rectangular dimensions with Ctrl', () => {
-    expect(drawRect({ x: 100, y: 100 }, { x: 250, y: 180 }, bounds, true)).toEqual({ x: 100, y: 100, width: 150, height: 80 })
+  it('constrains equal width and height with Shift', () => {
+    expect(drawRect({ x: 100, y: 100 }, { x: 250, y: 180 }, bounds, true)).toEqual({ x: 100, y: 100, width: 150, height: 150 })
   })
   it('supports reverse drags and constrains the square to both edges', () => {
-    expect(drawRect({ x: 100, y: 50 }, { x: -100, y: -100 }, bounds, false)).toEqual({ x: 50, y: 0, width: 50, height: 50 })
-    expect(drawRect({ x: 100, y: 50 }, { x: -100, y: -100 }, bounds, true)).toEqual({ x: 0, y: 0, width: 100, height: 50 })
+    expect(drawRect({ x: 100, y: 50 }, { x: -100, y: -100 }, bounds, true)).toEqual({ x: 50, y: 0, width: 50, height: 50 })
+    expect(drawRect({ x: 100, y: 50 }, { x: -100, y: -100 }, bounds)).toEqual({ x: 0, y: 0, width: 100, height: 50 })
   })
   it('constrains forward drawing at the bottom and right edges', () => {
-    expect(drawRect({ x: 700, y: 550 }, { x: 1000, y: 900 }, bounds, false)).toEqual({ x: 700, y: 550, width: 50, height: 50 })
+    expect(drawRect({ x: 700, y: 550 }, { x: 1000, y: 900 }, bounds, true)).toEqual({ x: 700, y: 550, width: 50, height: 50 })
   })
   it.each(['nw', 'ne', 'sw', 'se'] as Corner[])('supports free resizing at %s while fixing the opposite corner', corner => {
     const rect = { x: 300, y: 250, width: 200, height: 100 }
@@ -77,5 +77,24 @@ describe('shape drawing', () => {
     expect(resized.height).toBe(80)
     expect(sx === 1 ? resized.x : resized.x + resized.width).toBe(anchor.x)
     expect(sy === 1 ? resized.y : resized.y + resized.height).toBe(anchor.y)
+  })
+  it.each(['nw', 'ne', 'sw', 'se'] as Corner[])('forces equal sides at %s while fixing the opposite corner and respecting edges', corner => {
+    const rect = { x: 300.25, y: 250.5, width: 200, height: 100 }
+    const sx = corner.endsWith('e') ? 1 : -1
+    const sy = corner.startsWith('s') ? 1 : -1
+    const anchor = { x: sx === 1 ? rect.x : rect.x + rect.width, y: sy === 1 ? rect.y : rect.y + rect.height }
+    const pointer = { x: anchor.x + sx * 240, y: anchor.y + sy * 160 }
+    const result = resizeRect(rect, corner, pointer, bounds, true)
+    expect(result.width).toBe(200)
+    expect(result.height).toBe(200)
+    expect(sx === 1 ? result.x : result.x + result.width).toBe(anchor.x)
+    expect(sy === 1 ? result.y : result.y + result.height).toBe(anchor.y)
+    const edge = resizeRect(rect, corner, { x: sx * 10000, y: sy * 10000 }, bounds, true)
+    expect(edge.width).toBe(edge.height)
+    expect(edge.x).toBeGreaterThanOrEqual(0)
+    expect(edge.y).toBeGreaterThanOrEqual(0)
+    expect(edge.x + edge.width).toBeLessThanOrEqual(bounds.width)
+    expect(edge.y + edge.height).toBeLessThanOrEqual(bounds.height)
+    expect(resizeRect(rect, corner, { x: -sx * 10000, y: -sy * 10000 }, bounds, true)).toMatchObject({ width: 8, height: 8 })
   })
 })

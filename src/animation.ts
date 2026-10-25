@@ -16,8 +16,8 @@ export function animationFrameName(group: AnimationGroup, index: number) {
   return `${group.name}_${String(index + 1).padStart(Math.max(3, String(group.frames.length).length), '0')}`
 }
 export interface ResourceIssue { id: string; name: string; reason: string; target?: 'animation' }
-export function analyzeResources(layers: Layer[], groups: AnimationGroup[] = []): ResourceIssue[] {
-  const entries = layers.filter(isImageLayer).map(layer => ({ id: layer.id, name: layer.name, resource: resourceName(layer.name), target: undefined as 'animation' | undefined }))
+export function analyzeResources(layers: Layer[], groups: AnimationGroup[] = [], { includeShapes = false } = {}): ResourceIssue[] {
+  const entries = layers.filter(layer => isImageLayer(layer) || includeShapes).map(layer => ({ id: layer.id, name: layer.name, resource: isImageLayer(layer) ? resourceName(layer.name) : layer.name, target: undefined as 'animation' | undefined }))
   for (const group of groups) for (let i = 0; i < group.frames.length; i++) entries.push({ id: group.id, name: group.name, resource: animationFrameName(group, i), target: 'animation' })
   const counts = new Map<string, number>()
   for (const entry of entries) counts.set(entry.resource, (counts.get(entry.resource) ?? 0) + 1)
@@ -28,7 +28,7 @@ export function analyzeResources(layers: Layer[], groups: AnimationGroup[] = [])
     if (reason) { issues.push({ id: group.id, name: group.name, reason, target: 'animation' }); seen.add(group.id) }
   }
   for (const entry of entries) {
-    const reason = resourceNameIssue(entry.resource) || ((counts.get(entry.resource) ?? 0) > 1 ? '去掉图片扩展名后与其他图片名称重复。' : '')
+    const reason = resourceNameIssue(entry.resource) || ((counts.get(entry.resource) ?? 0) > 1 ? (includeShapes ? '导出名称与其他图层或动画帧名称重复。' : '去掉图片扩展名后与其他图片名称重复。') : '')
     if (reason && !seen.has(entry.id)) { issues.push({ id: entry.id, name: entry.name, reason, ...(entry.target ? { target: entry.target } : {}) }); seen.add(entry.id) }
   }
   return issues

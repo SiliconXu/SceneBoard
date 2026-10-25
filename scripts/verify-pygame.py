@@ -41,7 +41,7 @@ def verify():
     import pygame
 
     root = pathlib.Path(__file__).resolve().parent.parent / 'test-results'
-    for kind in ['color', 'image', 'empty']:
+    for kind in ['color', 'image', 'empty', 'shapes']:
         archive = root / f'pygame-runtime-{kind}.zip'
         target = root / f'pygame-runtime-{kind}'
         target.mkdir(exist_ok=True)
@@ -49,17 +49,30 @@ def verify():
             zipped.extractall(target)
         project = target / 'pygame_project'
         main = project / 'main.py'
-        for node in ast.walk(ast.parse(main.read_text(encoding='utf-8'))):
+        tree = ast.parse(main.read_text(encoding='utf-8'))
+        rects = {}
+        for node in ast.walk(tree):
             if isinstance(node, ast.Assign) and any(isinstance(item, ast.Attribute) and item.attr == 'pos' for item in node.targets):
                 assert isinstance(node.value, ast.Tuple)
                 assert all(isinstance(value, ast.Constant) and type(value.value) is int for value in node.value.elts)
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and node.value.func.id == 'Rect':
+                values = [ast.literal_eval(arg) for arg in node.value.args]
+                assert all(type(value) is int for value in values)
+                rects[node.targets[0].id] = pygame.Rect(*values)
+        if kind == 'shapes':
+            assert rects['wall'] == pygame.Rect(10, 21, 101, 50)
+            assert rects['goal'] == pygame.Rect(201, 100, 21, 10)
+            assert rects['wall'].collidepoint(20, 30)
+            assert not rects['wall'].colliderect(rects['goal'])
+        elif kind != 'empty':
+            assert rects['wall'] == pygame.Rect(0, 0, 20, 20)
         screenshot = target / 'frame.png'
         subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve()), '--capture', str(main), str(screenshot)], check=True, timeout=15, cwd=project)
         frame = pygame.image.load(screenshot)
         assert frame.get_size() == (320, 240)
         # JPEG background encoding may differ by a channel value.
         assert all(abs(a-b) <= 2 for a, b in zip(frame.get_at((200, 100))[:3], (32, 48, 64)))
-        if kind != 'empty':
+        if kind not in ['empty', 'shapes']:
             cat = pygame.image.load(project / 'images/cat.png')
             dog = pygame.image.load(project / 'images/dog.png')
             assert cat.get_size() == (81, 40)
@@ -82,6 +95,9 @@ def verify():
                 assert frame.get_at(point) == expected.get_at(point), (kind, point, frame.get_at(point), expected.get_at(point))
         else:
             assert list((project / 'images').iterdir()) == []
+            expected = pygame.Surface((320, 240))
+            expected.fill('#203040')
+            assert pygame.image.tobytes(frame, 'RGB') == pygame.image.tobytes(expected, 'RGB')
         print(f'PASS {kind}: actual Pygame Zero frame -> {screenshot}')
 
     for kind in ['edits', 'animation']:

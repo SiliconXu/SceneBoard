@@ -27,11 +27,11 @@ export function moveRect(rect: Rect, delta: Point, bounds: Size): Rect {
 }
 
 // Project the pointer onto the aspect-ratio diagonal. The opposite corner stays fixed.
-export function resizeRect(rect: Rect, corner: Corner, pointer: Point, bounds: Size): Rect {
+export function resizeRect(rect: Rect, corner: Corner, pointer: Point, bounds: Size, equalSides = false): Rect {
   const sx = corner.endsWith('e') ? 1 : -1
   const sy = corner.startsWith('s') ? 1 : -1
   const anchor = { x: sx === 1 ? rect.x : rect.x + rect.width, y: sy === 1 ? rect.y : rect.y + rect.height }
-  const ratio = rect.height / rect.width
+  const ratio = equalSides ? 1 : rect.height / rect.width
   const dx = (pointer.x - anchor.x) * sx
   const dy = (pointer.y - anchor.y) * sy
   const requestedWidth = (dx + dy * ratio) / (1 + ratio * ratio)
@@ -46,13 +46,13 @@ export function screenToImage(point: Point, origin: Point, scale: number): Point
   return { x: (point.x - origin.x) / scale, y: (point.y - origin.y) / scale }
 }
 
-export function drawRect(start: Point, pointer: Point, bounds: Size, free: boolean): Rect {
+export function drawRect(start: Point, pointer: Point, bounds: Size, equalSides = false): Rect {
   const end = { x: clamp(pointer.x, 0, bounds.width), y: clamp(pointer.y, 0, bounds.height) }
   const sx = end.x >= start.x ? 1 : -1
   const sy = end.y >= start.y ? 1 : -1
   let width = Math.abs(end.x - start.x)
   let height = Math.abs(end.y - start.y)
-  if (!free) {
+  if (equalSides) {
     const side = Math.min(Math.max(width, height), sx === 1 ? bounds.width - start.x : start.x, sy === 1 ? bounds.height - start.y : start.y)
     width = height = side
   }
