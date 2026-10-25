@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 
-test('wheel zoom anchors the map, right drag pans, and object coordinates stay in original pixels', async ({ page }) => {
+test('wheel zoom anchors the map, Space-left and middle drag pan, and object coordinates stay in original pixels', async ({ page }) => {
   await page.goto('/')
   await page.getByTestId('background-input').setInputFiles(await imageFile(page, 'map.png', 800, 600, '#dddddd'))
   await page.getByTestId('layer-input').setInputFiles(await imageFile(page, 'actor.png', 80, 60, '#00ff00'))
@@ -18,9 +18,11 @@ test('wheel zoom anchors the map, right drag pans, and object coordinates stay i
   await expect(page.getByTestId('layer-card')).toContainText('(360, 270)')
   const actorBox = (await actor.boundingBox())!
   await page.mouse.move(actorBox.x + actorBox.width / 2, actorBox.y + actorBox.height / 2)
-  await page.mouse.down({ button: 'right' })
+  await page.keyboard.down('Space')
+  await page.mouse.down()
   await page.mouse.move(actorBox.x + actorBox.width / 2 + 40, actorBox.y + actorBox.height / 2 + 30)
-  await page.mouse.up({ button: 'right' })
+  await page.mouse.up()
+  await page.keyboard.up('Space')
   const panned = (await stage.boundingBox())!
   expect(panned.x - enlarged.x).toBeCloseTo(40, 1)
   expect(panned.y - enlarged.y).toBeCloseTo(30, 1)
@@ -34,9 +36,9 @@ test('wheel zoom anchors the map, right drag pans, and object coordinates stay i
   await expect(page.getByTestId('layer-card')).toContainText('(370, 275)')
   const workspaceBox = (await page.locator('.workspace').boundingBox())!
   await page.mouse.move(workspaceBox.x + workspaceBox.width / 2, workspaceBox.y + workspaceBox.height / 2)
-  await page.mouse.down({ button: 'right' })
+  await page.mouse.down({ button: 'middle' })
   await page.mouse.move(workspaceBox.x + workspaceBox.width / 2 + 2000, workspaceBox.y + workspaceBox.height / 2 + 2000)
-  await page.mouse.up({ button: 'right' })
+  await page.mouse.up({ button: 'middle' })
   const atEdge = (await stage.boundingBox())!
   expect(atEdge.x).toBeCloseTo(workspaceBox.x + 1, 1)
   expect(atEdge.y).toBeCloseTo(workspaceBox.y + 1, 1)
@@ -46,9 +48,11 @@ test('wheel zoom anchors the map, right drag pans, and object coordinates stay i
   expect(restored.width).toBeCloseTo(initial.width, 1)
   expect(restored.x).toBeCloseTo(initial.x, 1)
   await page.mouse.move(restored.x + restored.width / 2, restored.y + restored.height / 2)
-  await page.mouse.down({ button: 'right' })
+  await page.keyboard.down('Space')
+  await page.mouse.down()
   await page.mouse.move(restored.x + restored.width / 2 + 60, restored.y + restored.height / 2 + 60)
-  await page.mouse.up({ button: 'right' })
+  await page.mouse.up()
+  await page.keyboard.up('Space')
   expect((await stage.boundingBox())!.x).toBeCloseTo(restored.x, 1)
   await expect(actor).toHaveAttribute('aria-pressed', 'true')
 })

@@ -253,7 +253,7 @@ test('marquee coordinates remain correct after zoom and pan and cancel on pointe
   await expect.poll(async () => (await page.getByTestId('stage').boundingBox())!.width).toBeGreaterThan(box.width * 1.5)
   const workspace = (await page.locator('.workspace').boundingBox())!
   await page.mouse.move(workspace.x + workspace.width / 2, workspace.y + workspace.height / 2)
-  await page.mouse.down({ button: 'right' }); await page.mouse.move(workspace.x + workspace.width / 2 + 40, workspace.y + workspace.height / 2 + 20); await page.mouse.up({ button: 'right' })
+  await page.mouse.down({ button: 'middle' }); await page.mouse.move(workspace.x + workspace.width / 2 + 40, workspace.y + workspace.height / 2 + 20); await page.mouse.up({ button: 'middle' })
   // These scene points stay inside the visible viewport after zoom and pan.
   await frame(page, { x: 220, y: 110 }, { x: 320, y: 180 })
   await selected(page, ['b'])

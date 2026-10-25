@@ -62,7 +62,8 @@
 .measurement-guide rect{fill:rgba(255,250,239,.9);}
 .measurement-guide text{fill:#b47621;font-family:Consolas,monospace;font-size:11px;}
 .brand-logo{display:block;width:180px;height:66px;object-fit:contain;max-width:45vw;}
-.workspace.panning,.workspace.panning .stage,.workspace.panning .image-layer{cursor:grabbing;}
+.workspace.pan-ready,.workspace.pan-ready .stage,.workspace.pan-ready .image-layer,.workspace.pan-ready .resize-handle{cursor:grab;}
+.workspace.panning,.workspace.panning .stage,.workspace.panning .image-layer,.workspace.panning .resize-handle{cursor:grabbing;}
 .fit-map{border:0;background:transparent;color:#536bdd;font-size:10px;padding:3px 5px;border-radius:3px;}
 .fit-map:hover:not(:disabled){background:#e5eafa;}
 @media(max-width:760px){.drawing-tools>span{display:none;}}

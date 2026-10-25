@@ -121,7 +121,8 @@ const scale = ref(1)
 const zoom = ref(1)
 const pan = ref<Point>({ x: 0, y: 0 })
 const panning = ref(false)
-let panGesture: { pointerId: number; start: Point; origin: Point } | null = null
+const spacePressed = ref(false)
+let panGesture: { pointerId: number; button: number; start: Point; origin: Point } | null = null
 const message = ref('')
 const isError = ref(false)
 const busy = ref(false)
@@ -213,12 +214,13 @@ function zoomMap(event: WheelEvent) {
 }
 
 function beginPan(event: PointerEvent) {
-  if (event.button !== 2 || !background.value || !workspace.value) return
+  if ((event.button !== 1 && !(event.button === 0 && spacePressed.value)) || !background.value || !workspace.value) return
+  if ((event.target as HTMLElement).closest('.drawing-tools')) return
   event.preventDefault(); event.stopPropagation()
   if (busy.value || gesture || drawing || marquee) return
   const canPan = background.value.width * scale.value > workspace.value.clientWidth || background.value.height * scale.value > workspace.value.clientHeight
   if (!canPan) return
-  panGesture = { pointerId: event.pointerId, start: { x: event.clientX, y: event.clientY }, origin: { ...pan.value } }
+  panGesture = { pointerId: event.pointerId, button: event.button, start: { x: event.clientX, y: event.clientY }, origin: { ...pan.value } }
   panning.value = true
   guides.value = null; guideMode.value = null
   workspace.value.setPointerCapture(event.pointerId)
@@ -227,6 +229,7 @@ function beginPan(event: PointerEvent) {
 function updatePan(event: PointerEvent) {
   if (!panGesture || event.pointerId !== panGesture.pointerId) return
   event.preventDefault(); event.stopPropagation()
+  if (!(event.buttons & (panGesture.button === 0 ? 1 : 4))) { endPan(); return }
   pan.value = { x: panGesture.origin.x + event.clientX - panGesture.start.x, y: panGesture.origin.y + event.clientY - panGesture.start.y }
   constrainPan()
 }
@@ -236,6 +239,27 @@ function endPan(event?: PointerEvent) {
   const current = panGesture
   panGesture = null; panning.value = false
   if (workspace.value?.hasPointerCapture(current.pointerId)) workspace.value.releasePointerCapture(current.pointerId)
+}
+
+function preventPanMouseDefault(event: MouseEvent) {
+  if (event.button === 1 || (event.button === 0 && spacePressed.value)) event.preventDefault()
+}
+
+function onPanKeydown(event: KeyboardEvent) {
+  if (event.code !== 'Space' || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || !background.value || busy.value || modalOpen.value || confirmReplace.value || objectMenu.value) return
+  const target = event.target as HTMLElement
+  if (target?.isContentEditable || target?.closest('input, textarea, select')) return
+  // Preserve keyboard activation outside the canvas, unless the pointer is over it.
+  if (target?.closest('button, a, [role="button"]') && !workspace.value?.contains(target) && !workspace.value?.matches(':hover')) return
+  event.preventDefault(); event.stopPropagation()
+  spacePressed.value = true
+}
+
+function onPanKeyup(event: KeyboardEvent) {
+  if (event.code !== 'Space' || !spacePressed.value) return
+  event.preventDefault(); event.stopPropagation()
+  spacePressed.value = false
+  if (panGesture?.button === 0) endPan()
 }
 
 async function applyBackground(bg: Background) {
@@ -798,7 +822,7 @@ function onKeyup(event: KeyboardEvent) {
   shiftPressed.value = event.shiftKey; ctrlPressed.value = event.ctrlKey
   if (event.key === 'Shift' || event.key === 'Control') { refreshDrawing(); refreshResize() }
 }
-function onBlur() { closeObjectMenu(); shiftPressed.value = false; ctrlPressed.value = false; cancelDrawing(); endGesture(); endMarquee(); endPan() }
+function onBlur() { closeObjectMenu(); shiftPressed.value = false; ctrlPressed.value = false; spacePressed.value = false; cancelDrawing(); endGesture(); endMarquee(); endPan() }
 function beforeUnload(event: BeforeUnloadEvent) { if (dirty.value && background.value) { event.preventDefault(); event.returnValue = '' } }
 function closeExport(event: MouseEvent) {
   if (!(event.target as HTMLElement).closest('.export-wrap')) showExport.value = false
@@ -810,6 +834,8 @@ onMounted(() => {
   if (workspace.value) observer.observe(workspace.value)
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('keyup', onKeyup)
+  window.addEventListener('keydown', onPanKeydown, true)
+  window.addEventListener('keyup', onPanKeyup, true)
   window.addEventListener('blur', onBlur)
   window.addEventListener('beforeunload', beforeUnload)
   document.addEventListener('click', closeExport)
@@ -820,6 +846,8 @@ onBeforeUnmount(() => {
   cancelDrawing(); endGesture(); endMarquee(); endPan(); observer?.disconnect(); clearTimeout(toastTimer)
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('keyup', onKeyup)
+  window.removeEventListener('keydown', onPanKeydown, true)
+  window.removeEventListener('keyup', onPanKeyup, true)
   window.removeEventListener('blur', onBlur)
   window.removeEventListener('beforeunload', beforeUnload)
   document.removeEventListener('click', closeExport)
@@ -864,7 +892,7 @@ onBeforeUnmount(() => {
     <main class="main-layout" :inert="modalOpen">
       <section class="editor-panel" aria-label="图片编辑区">
         <div class="editor-heading"><div><span class="section-kicker">WORKSPACE</span><h1>{{ background ? background.name : '让每个位置，都有坐标。' }}</h1></div><span class="local-badge"><i></i>本地处理</span></div>
-        <div ref="workspace" class="workspace" :class="{ 'has-background': background, drawing: tool !== 'select', panning }" @wheel="zoomMap" @contextmenu.prevent @pointerdown.capture="beginPan" @pointermove.capture="updatePan" @pointerup.capture="endPan" @pointercancel="endPan" @lostpointercapture="endPan" @pointerdown.self="!busy && $event.button === 0 && (selectedId = null)">
+        <div ref="workspace" class="workspace" :class="{ 'has-background': background, drawing: tool !== 'select', 'pan-ready': spacePressed, panning }" @wheel="zoomMap" @mousedown.capture="preventPanMouseDefault" @auxclick="preventPanMouseDefault" @pointerdown.capture="beginPan" @pointermove.capture="updatePan" @pointerup.capture="endPan" @pointercancel="endPan" @lostpointercapture="endPan" @pointerdown.self="!busy && $event.button === 0 && (selectedId = null)">
           <div v-if="background" class="drawing-tools" aria-label="绘图工具"><button aria-label="选择工具" aria-keyshortcuts="1" :aria-pressed="tool === 'select'" :disabled="busy" @click="selectTool('select')">↖ 选择 <kbd>1</kbd></button><button aria-label="绘制矩形" aria-keyshortcuts="2" :aria-pressed="tool === 'rectangle'" :disabled="busy" @click="selectTool('rectangle')">▭ 矩形 <kbd>2</kbd></button><button aria-label="绘制椭圆" aria-keyshortcuts="3" :aria-pressed="tool === 'ellipse'" :disabled="busy" @click="selectTool('ellipse')">⬭ 椭圆 <kbd>3</kbd></button><span :title="drawingHint">{{ drawingHint }}</span></div>
           <div v-if="!background" class="empty-workspace">
             <div class="empty-art" aria-hidden="true"><div class="art-back"></div><div class="art-front"><svg viewBox="0 0 80 60" fill="none"><circle cx="57" cy="17" r="6" fill="currentColor"/><path d="M10 48 29 26l15 17 10-11 17 16H10Z" fill="currentColor"/></svg></div><span class="art-cross">＋</span><span class="art-corner"></span></div>
@@ -898,7 +926,7 @@ onBeforeUnmount(() => {
           <SelectionProperties v-if="selectedLayers.length && tool === 'select'" :layers="selectedLayers" :disabled="busy" @edit="editSelection" @align="arrangeSelection" @distribute="distribute" @flip="flipSelection" @crop="openCrop" />
           <p v-else class="selection-empty">选择对象后可编辑位置与尺寸，多选后可对齐和分布。</p>
         </div>
-        <div class="editor-footer"><span><span class="hint-icon">⌖</span>{{ background ? '拖动对象 · 四角缩放 · 滚轮缩放地图 · 右键拖动地图' : '原点位于背景左上角，横轴向右，纵轴向下' }}</span><span class="zoom-readout">{{ background ? `${round(background.width)} × ${round(background.height)} px · ${Math.round(scale * 100)}%` : '坐标单位：原图像素' }} <button v-if="background" class="fit-map" :disabled="busy" @click="cancelDrawing(); endGesture(); fitStage(true)">适应窗口</button></span></div>
+        <div class="editor-footer"><span><span class="hint-icon">⌖</span>{{ background ? '拖动对象 · 四角缩放 · 滚轮缩放地图 · 空格＋左键 / 中键拖动地图' : '原点位于背景左上角，横轴向右，纵轴向下' }}</span><span class="zoom-readout">{{ background ? `${round(background.width)} × ${round(background.height)} px · ${Math.round(scale * 100)}%` : '坐标单位：原图像素' }} <button v-if="background" class="fit-map" :disabled="busy" @click="cancelDrawing(); endGesture(); fitStage(true)">适应窗口</button></span></div>
       </section>
 
       <aside class="sidebar">
